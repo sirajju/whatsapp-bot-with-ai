@@ -53,11 +53,15 @@ func main() {
 	// Build router + register commands.
 	r := router.New(cli, cfg, st, log)
 	provider := ai.Pick(ai.Config{
-		OllamaURL: cfg.OllamaURL, OllamaModel: cfg.OllamaModel,
-		GroqKey: cfg.GroqKey, GroqModel: cfg.GroqModel,
-		AnthropicKey: cfg.AnthropicKey, AnthropicMdl: cfg.AnthropicMdl,
-		OpenAIKey: cfg.OpenAIKey, OpenAIModel: cfg.OpenAIModel,
-		GeminiKey: cfg.GeminiKey, GeminiModel: cfg.GeminiModel,
+		Preferred:       cfg.AIPreferred,
+		OllamaURL:       cfg.OllamaURL, OllamaModel: cfg.OllamaModel,
+		GroqKey:         cfg.GroqKey, GroqModel: cfg.GroqModel,
+		AnthropicKey:    cfg.AnthropicKey, AnthropicMdl: cfg.AnthropicMdl,
+		OpenAIKey:       cfg.OpenAIKey, OpenAIModel: cfg.OpenAIModel,
+		GeminiKey:       cfg.GeminiKey, GeminiModel: cfg.GeminiModel,
+		NvidiaKey:       cfg.NvidiaKey, NvidiaModel: cfg.NvidiaModel,
+		OpenRouterKey:   cfg.OpenRouterKey, OpenRouterModel: cfg.OpenRouterModel,
+		OpencodeArgv:    cfg.OpencodeArgv,
 	})
 	if provider != nil {
 		log.Info().Str("provider", provider.Name()).Msg("AI provider ready")
@@ -68,14 +72,18 @@ func main() {
 	// Passive hooks run before command dispatch, in order.
 	r.AddHook(commands.BlocklistHook())
 	r.AddHook(commands.AntilinkHook())
+	// Fallback: in AI session mode, bare messages go to the LLM.
+	r.SetFallback(commands.AIFallback(provider))
 
 	start := time.Now()
 	// Core
 	r.Register("ping", "liveness check", commands.Ping(start))
 	// AI
-	r.Register("ai", "ask the configured LLM", commands.AI(provider), "chat", "gpt")
+	r.Register("ai", "ask the LLM (no args = enter chat mode)", commands.AI(provider), "chat", "gpt")
+	r.Register("endai", "leave AI chat mode", commands.EndAI())
 	r.Register("clearai", "wipe AI chat memory for this chat", commands.ClearAI())
 	r.Register("persona", "switch AI persona for this chat", commands.SetPersona())
+	r.Register("run", "owner: run a script from ./scripts/", commands.Run())
 	// Stickers
 	r.Register("sticker", "reply to image/video → sticker", commands.Sticker(), "s")
 	r.Register("toimg", "reply to a sticker → jpeg image", commands.Toimg())
@@ -107,6 +115,19 @@ func main() {
 	r.Register("block", "owner: block a user from the bot", commands.Block())
 	r.Register("unblock", "owner: unblock a user", commands.Unblock())
 	r.Register("restart", "owner: exit (expects supervisor to respawn)", commands.Restart())
+	// Voice
+	r.Register("tts", "text to speech (voice note)", commands.TTS())
+	r.Register("voice", "speak with a cloned ElevenLabs voice", commands.Voice())
+	r.Register("clonevoice", "owner: clone voice from quoted voice note", commands.CloneVoice())
+	r.Register("voices", "list cloned voices", commands.Voices())
+	// Extras
+	r.Register("wiki", "Wikipedia summary", commands.Wiki())
+	r.Register("define", "dictionary lookup", commands.Define(), "def")
+	r.Register("urban", "Urban Dictionary", commands.Urban())
+	r.Register("joke", "random joke", commands.Joke())
+	r.Register("short", "shorten a URL (is.gd)", commands.Short())
+	r.Register("qr", "generate a QR code image", commands.QR())
+	r.Register("meme", "make a meme (memegen.link)", commands.Meme())
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 
