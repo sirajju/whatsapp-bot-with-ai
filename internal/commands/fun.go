@@ -75,28 +75,35 @@ func Calc() router.Handler {
 	}
 }
 
-// Translate uses the public Lingva Translate API (open-source, no key).
+// Translate uses MyMemory's free public translation API (no key, 5000 words/day).
+// Lingva's public mirrors became unreliable in 2024-25; MyMemory is far more stable.
 func Translate() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if len(env.Args) < 2 {
 			return sendText(ctx, env.Cli, env.Chat,
-				"usage: !tr <target-lang-code> <text>   e.g. !tr es hello")
+				"usage: "+env.Cfg.Prefix+"tr <target-lang-code> <text>   e.g. "+env.Cfg.Prefix+"tr es hello")
 		}
 		target := strings.ToLower(env.Args[0])
 		text := strings.Join(env.Args[1:], " ")
-		u := fmt.Sprintf("https://lingva.ml/api/v1/auto/%s/%s",
-			url.PathEscape(target), url.PathEscape(text))
+		u := fmt.Sprintf(
+			"https://api.mymemory.translated.net/get?q=%s&langpair=auto|%s",
+			url.QueryEscape(text), url.QueryEscape(target))
 		b, err := httpGet(ctx, u)
 		if err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "translate: "+err.Error())
 		}
 		var r struct {
-			Translation string `json:"translation"`
+			ResponseData struct {
+				TranslatedText string `json:"translatedText"`
+			} `json:"responseData"`
+			ResponseStatus int `json:"responseStatus"`
 		}
-		if err := json.Unmarshal(b, &r); err != nil || r.Translation == "" {
-			return sendText(ctx, env.Cli, env.Chat, "translate: empty response")
+		if err := json.Unmarshal(b, &r); err != nil ||
+			r.ResponseData.TranslatedText == "" ||
+			r.ResponseStatus != 200 {
+			return sendText(ctx, env.Cli, env.Chat, "translate: empty response (lang code wrong?)")
 		}
-		return sendText(ctx, env.Cli, env.Chat, r.Translation)
+		return sendText(ctx, env.Cli, env.Chat, r.ResponseData.TranslatedText)
 	}
 }
 
@@ -151,21 +158,21 @@ func Weather() router.Handler {
 	}
 }
 
-// Quote fetches a random one from Quotable (free, no key).
+// Quote fetches a random one from ZenQuotes (free, no key — quotable.io shut down in 2024).
 func Quote() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
-		b, err := httpGet(ctx, "https://api.quotable.io/random")
+		b, err := httpGet(ctx, "https://zenquotes.io/api/random")
 		if err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "quote: "+err.Error())
 		}
-		var r struct {
-			Content string `json:"content"`
-			Author  string `json:"author"`
+		var r []struct {
+			Q string `json:"q"`
+			A string `json:"a"`
 		}
-		if err := json.Unmarshal(b, &r); err != nil {
-			return sendText(ctx, env.Cli, env.Chat, "quote parse: "+err.Error())
+		if err := json.Unmarshal(b, &r); err != nil || len(r) == 0 {
+			return sendText(ctx, env.Cli, env.Chat, "quote parse: empty")
 		}
-		return sendText(ctx, env.Cli, env.Chat, fmt.Sprintf("“%s”\n— %s", r.Content, r.Author))
+		return sendText(ctx, env.Cli, env.Chat, fmt.Sprintf("“%s”\n— %s", r[0].Q, r[0].A))
 	}
 }
 

@@ -8,12 +8,12 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/media"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
 )
 
-// Sticker converts a quoted image or video into a WebP sticker.
 func Sticker() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if _, err := exec.LookPath("ffmpeg"); err != nil {
@@ -21,17 +21,16 @@ func Sticker() router.Handler {
 		}
 		raw, mime, err := media.ExtractQuotedMedia(ctx, env.Cli, env.Msg)
 		if err != nil {
-			return sendText(ctx, env.Cli, env.Chat, "reply to an image or short video with !sticker")
+			return sendText(ctx, env.Cli, env.Chat, "reply to an image or short video with "+env.Cfg.Prefix+"sticker")
 		}
 		webp, err := media.ToWebPSticker(ctx, raw, mime)
 		if err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "encode: "+err.Error())
 		}
-		return uploadSticker(ctx, env.Cli, env.Chat, webp)
+		return uploadAndSendSticker(ctx, env.Cli, env.Chat, webp)
 	}
 }
 
-// Toimg reverses a sticker back into a JPEG image.
 func Toimg() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if _, err := exec.LookPath("ffmpeg"); err != nil {
@@ -39,7 +38,7 @@ func Toimg() router.Handler {
 		}
 		raw, err := media.ExtractQuotedSticker(ctx, env.Cli, env.Msg)
 		if err != nil {
-			return sendText(ctx, env.Cli, env.Chat, "reply to a sticker with !toimg")
+			return sendText(ctx, env.Cli, env.Chat, "reply to a sticker with "+env.Cfg.Prefix+"toimg")
 		}
 		jpg, err := media.StickerToJPEG(ctx, raw)
 		if err != nil {
@@ -64,7 +63,6 @@ func Toimg() router.Handler {
 	}
 }
 
-// Stext builds a text-only sticker from the command args.
 func Stext() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if _, err := exec.LookPath("ffmpeg"); err != nil {
@@ -78,16 +76,25 @@ func Stext() router.Handler {
 		if err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "stext: "+err.Error())
 		}
-		return uploadSticker(ctx, env.Cli, env.Chat, webp)
+		return uploadAndSendSticker(ctx, env.Cli, env.Chat, webp)
 	}
 }
 
-func uploadSticker(ctx context.Context, cli *whatsmeow.Client, chat any, webp []byte) error {
-	type chatJID interface{ String() string }
-	jid := chat.(interface {
-		User() string
+func uploadAndSendSticker(ctx context.Context, cli *whatsmeow.Client, chat types.JID, webp []byte) error {
+	up, err := cli.Upload(ctx, webp, whatsmeow.MediaImage)
+	if err != nil {
+		return err
+	}
+	_, err = cli.SendMessage(ctx, chat, &waE2E.Message{
+		StickerMessage: &waE2E.StickerMessage{
+			URL:           &up.URL,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			MediaKey:      up.MediaKey,
+			Mimetype:      stringPtr("image/webp"),
+			DirectPath:    &up.DirectPath,
+			FileLength:    uint64Ptr(uint64(len(webp))),
+		},
 	})
-	_ = jid
-	// We pass chat.(types.JID) in callers; this helper stays typed where needed.
-	return nil
+	return err
 }
