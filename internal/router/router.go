@@ -125,11 +125,21 @@ func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
 func (r *Router) buildEnv(evt *events.Message, text string) *Env {
 	isGroup := evt.Info.IsGroup
 	sender := evt.Info.Sender
+
+	// Candidate user ids to compare against OWNERS: the main sender's User plus
+	// SenderAlt.User (WhatsApp's LID → phone-number alternative identifier).
+	candidates := []string{sender.User}
+	if alt := evt.Info.SenderAlt; !alt.IsEmpty() && alt.User != "" {
+		candidates = append(candidates, alt.User)
+	}
 	isOwner := false
-	for _, o := range r.cfg.Owners {
-		if sender.User == o {
-			isOwner = true
-			break
+checkOwners:
+	for _, u := range candidates {
+		for _, o := range r.cfg.Owners {
+			if u == o {
+				isOwner = true
+				break checkOwners
+			}
 		}
 	}
 	return &Env{

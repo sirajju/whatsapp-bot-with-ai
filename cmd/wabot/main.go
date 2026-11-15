@@ -100,8 +100,9 @@ func main() {
 	r.Register("skill", "run a skill from ./skills/", commands.Skill())
 	r.Register("skills", "list available skills", commands.Skills())
 	// System
-	r.Register("status", "RAM / disk / uptime snapshot", commands.Status(start), "sysinfo")
+	r.Register("status", "owner: RAM / disk / uptime snapshot", commands.Status(start), "sysinfo")
 	r.Register("sh", "owner: run a bash command", commands.Sh())
+	r.Register("whoami", "show how the bot identifies you", commands.Whoami())
 	// Stickers
 	r.Register("sticker", "reply to image/video → sticker", commands.Sticker(), "s")
 	r.Register("toimg", "reply to a sticker → jpeg image", commands.Toimg())
