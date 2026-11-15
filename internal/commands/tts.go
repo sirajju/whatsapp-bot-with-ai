@@ -1,0 +1,265 @@
+package commands
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/media"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
+)
+
+// TTS speaks the given text as a voice note.
+// Uses ElevenLabs if ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID are set.
+// Falls back to Microsoft Edge TTS (`edge-tts` CLI, free; pipx install edge-tts).
+func TTS() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		if len(env.Args) == 0 {
+			return sendText(ctx, env.Cli, env.Chat, "usage: "+env.Cfg.Prefix+"tts <text>")
+		}
+		text := strings.Join(env.Args, " ")
+		_ = sendText(ctx, env.Cli, env.Chat, "🔊 generating voice…")
+
+		var mp3 []byte
+		var err error
+		if env.Cfg.ElevenLabsKey != "" && env.Cfg.ElevenLabsVoiceID != "" {
+			mp3, err = elevenlabsTTS(ctx, env.Cfg.ElevenLabsKey, env.Cfg.ElevenLabsVoiceID, text)
+		} else {
+			mp3, err = edgeTTS(ctx, text, "en-US-AriaNeural")
+		}
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "tts: "+err.Error())
+		}
+		return sendVoiceNoteFromMP3(ctx, env.Cli, env.Chat, mp3)
+	}
+}
+
+// Voice uses a previously cloned ElevenLabs voice by name (from the voices table).
+func Voice() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		if env.Cfg.ElevenLabsKey == "" {
+			return sendText(ctx, env.Cli, env.Chat, "set ELEVENLABS_API_KEY to use "+env.Cfg.Prefix+"voice")
+		}
+		if len(env.Args) < 2 {
+			return sendText(ctx, env.Cli, env.Chat,
+				"usage: "+env.Cfg.Prefix+"voice <name> <text>   (list with "+env.Cfg.Prefix+"voices)")
+		}
+		name := strings.ToLower(env.Args[0])
+		text := strings.Join(env.Args[1:], " ")
+
+		voiceID, ok := env.Store.GetVoice(ctx, name)
+		if !ok {
+			return sendText(ctx, env.Cli, env.Chat,
+				"no voice named "+name+". List with "+env.Cfg.Prefix+"voices or clone one with "+env.Cfg.Prefix+"clonevoice")
+		}
+		_ = sendText(ctx, env.Cli, env.Chat, "🔊 generating voice…")
+		mp3, err := elevenlabsTTS(ctx, env.Cfg.ElevenLabsKey, voiceID, text)
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "voice: "+err.Error())
+		}
+		return sendVoiceNoteFromMP3(ctx, env.Cli, env.Chat, mp3)
+	}
+}
+
+// CloneVoice (owner, reply to a voice note) uploads the sample to ElevenLabs
+// and remembers its id under the given name.
+func CloneVoice() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		if !env.IsOwner {
+			return sendText(ctx, env.Cli, env.Chat, "owner only")
+		}
+		if env.Cfg.ElevenLabsKey == "" {
+			return sendText(ctx, env.Cli, env.Chat, "set ELEVENLABS_API_KEY to clone voices")
+		}
+		if len(env.Args) == 0 {
+			return sendText(ctx, env.Cli, env.Chat,
+				"usage: reply to a voice note with "+env.Cfg.Prefix+"clonevoice <name>")
+		}
+		name := strings.ToLower(env.Args[0])
+		raw, err := extractQuotedVoiceNote(ctx, env.Cli, env.Msg)
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "clonevoice: "+err.Error())
+		}
+		_ = sendText(ctx, env.Cli, env.Chat, "🧬 uploading sample & cloning…")
+
+		mp3, err := media.MP3FromAny(ctx, raw, ".ogg")
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "transcode: "+err.Error())
+		}
+		voiceID, err := elevenlabsClone(ctx, env.Cfg.ElevenLabsKey, name, mp3)
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "clone: "+err.Error())
+		}
+		if err := env.Store.SetVoice(ctx, name, voiceID); err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "save: "+err.Error())
+		}
+		return sendText(ctx, env.Cli, env.Chat,
+			"✅ voice *"+name+"* cloned. Use it with "+env.Cfg.Prefix+"voice "+name+" <text>")
+	}
+}
+
+// Voices lists all saved voices.
+func Voices() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		names, err := env.Store.ListVoices(ctx)
+		if err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "voices: "+err.Error())
+		}
+		if len(names) == 0 {
+			return sendText(ctx, env.Cli, env.Chat,
+				"no cloned voices. Reply to a voice note with "+env.Cfg.Prefix+"clonevoice <name>")
+		}
+		return sendText(ctx, env.Cli, env.Chat, "cloned voices:\n• "+strings.Join(names, "\n• "))
+	}
+}
+
+// ---------- providers ----------
+
+func elevenlabsTTS(ctx context.Context, key, voiceID, text string) ([]byte, error) {
+	buf, _ := json.Marshal(map[string]any{
+		"text":     text,
+		"model_id": "eleven_turbo_v2_5",
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		"https://api.elevenlabs.io/v1/text-to-speech/"+voiceID, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("xi-api-key", key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "audio/mpeg")
+	resp, err := httpCli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		errb, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return nil, fmt.Errorf("elevenlabs http %d: %s", resp.StatusCode, string(errb))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// elevenlabsClone uploads an mp3 sample via multipart/form-data and returns the new voice_id.
+func elevenlabsClone(ctx context.Context, key, name string, mp3 []byte) (string, error) {
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	_ = w.WriteField("name", name)
+	_ = w.WriteField("description", "Cloned from a WhatsApp voice note via wabot")
+	part, err := w.CreateFormFile("files", "sample.mp3")
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(mp3); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		"https://api.elevenlabs.io/v1/voices/add", body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("xi-api-key", key)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := httpCli.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("elevenlabs http %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var r struct {
+		VoiceID string `json:"voice_id"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.VoiceID == "" {
+		return "", fmt.Errorf("clone: no voice_id in response")
+	}
+	return r.VoiceID, nil
+}
+
+// edgeTTS shells to the `edge-tts` CLI (free Microsoft Edge TTS; `pipx install edge-tts`).
+func edgeTTS(ctx context.Context, text, voice string) ([]byte, error) {
+	if _, err := exec.LookPath("edge-tts"); err != nil {
+		return nil, fmt.Errorf("edge-tts not installed and ELEVENLABS_API_KEY not set. Install: pipx install edge-tts")
+	}
+	dir, err := os.MkdirTemp("", "wabot-tts-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	outPath := filepath.Join(dir, "out.mp3")
+	cmd := exec.CommandContext(ctx, "edge-tts",
+		"--voice", voice, "--text", text, "--write-media", outPath)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("edge-tts: %w: %s", err, errb.String())
+	}
+	return os.ReadFile(outPath)
+}
+
+// ---------- sending / extracting ----------
+
+func sendVoiceNoteFromMP3(ctx context.Context, cli *whatsmeow.Client, chat types.JID, mp3 []byte) error {
+	ogg, err := media.OggOpusFromMP3(ctx, mp3)
+	if err != nil {
+		return fmt.Errorf("ogg encode: %w", err)
+	}
+	up, err := cli.Upload(ctx, ogg, whatsmeow.MediaAudio)
+	if err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+	_, err = cli.SendMessage(ctx, chat, &waE2E.Message{
+		AudioMessage: &waE2E.AudioMessage{
+			URL:           &up.URL,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			MediaKey:      up.MediaKey,
+			Mimetype:      stringPtr("audio/ogg; codecs=opus"),
+			DirectPath:    &up.DirectPath,
+			FileLength:    uint64Ptr(uint64(len(ogg))),
+			PTT:           boolPtr(true),
+		},
+	})
+	return err
+}
+
+// extractQuotedVoiceNote pulls raw audio bytes from either the current message's
+// audio attachment or its quoted message's audio attachment.
+func extractQuotedVoiceNote(ctx context.Context, cli *whatsmeow.Client, evt *events.Message) ([]byte, error) {
+	if a := evt.Message.GetAudioMessage(); a != nil {
+		return cli.Download(ctx, a)
+	}
+	ext := evt.Message.GetExtendedTextMessage()
+	if ext == nil {
+		return nil, fmt.Errorf("reply to a voice note (or send one with the command as caption)")
+	}
+	q := ext.GetContextInfo().GetQuotedMessage()
+	if q == nil {
+		return nil, fmt.Errorf("no quoted message")
+	}
+	if a := q.GetAudioMessage(); a != nil {
+		return cli.Download(ctx, a)
+	}
+	return nil, fmt.Errorf("quoted message is not audio")
+}
+
+func boolPtr(b bool) *bool { return &b }
