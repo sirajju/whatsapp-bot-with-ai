@@ -30,6 +30,8 @@ Syntax
 ------
   add  <name> <amount> [(payer)] [note…]     shared expense, optional payer
   pay  <from> <amount> <to>                   direct settlement, 1-to-1
+  settle <id> <payer>                         mark a credit entry as paid by
+  credit | due | monthend                    list all unpaid (credit) entries
   members <name> [name...]                    replace members list
   members +<name>                             add a single member
   members -<name>                             remove a single member
@@ -39,6 +41,12 @@ Syntax
   del <id> | rm <id>                          remove an entry
   clear | reset                               wipe this chat
   who                                         members + participants seen
+
+Credit
+------
+  An expense with no payer is on CREDIT — the group collectively owes
+  that amount (shop tab, month-end bill, etc). Balance math still splits
+  the share among members; `settle` moves the row from credit to paid.
 
 Shortcuts (no subcommand):
   "<name> <amount>"                           shared add, no payer
@@ -218,7 +226,9 @@ def usage() -> str:
     return textwrap.dedent("""\
         💰 *Expense tracker*
 
-        *add* <name> <amount> [(payer)] [note]   shared expense
+        *add* <name> <amount> [(payer)] [note]   shared expense (unpaid = credit)
+        *settle* <id> <payer>                    mark a credit entry as paid by
+        *credit* | *due* | *monthend*            list unpaid (credit) entries
         *pay* <from> <amount> <to>                direct settlement
         *members* <name> [name...]                set participants
         *members* +<name> | -<name>               add/remove one
@@ -229,8 +239,11 @@ def usage() -> str:
         *clear* | *reset*                          wipe this chat
         *who*                                       members + anyone seen
 
+        Credit: an expense with no payer is on CREDIT (group tab, pay later).
+        Use *settle* when someone pays it. Use *credit* to see what's open.
+
         Shortcuts (no subcommand):
-          `<name> <amount>`                        shared add, no payer yet
+          `<name> <amount>`                        shared add, on credit
           `<name> <amount> (<payer>)`              shared add, payer known
           `<name> <amount> words…`                 shared add with a note""")
 
@@ -374,8 +387,8 @@ def cmd_total(_args=None):
     ]
     if orphans_total > 0:
         lines.append(
-            f"⚠ {fmt_amt(orphans_total)} of the pool has no payer assigned — "
-            "run `members +name` and tag entries via `add` when you know who paid."
+            f"💳 {fmt_amt(orphans_total)} on credit (unpaid). "
+            "Use `credit` to see which, `settle <id> <payer>` to assign."
         )
     lines.append("")
     for name in universe:
@@ -443,6 +456,65 @@ def cmd_del(args):
     return f"deleted #{id_}" if cur.rowcount else f"no entry #{id_}"
 
 
+def cmd_settle(args):
+    """Mark one credit entry (paid_by IS NULL) as paid by <payer>."""
+    if len(args) < 2:
+        return "usage: settle <id> <payer>"
+    try:
+        id_ = int(args[0])
+    except ValueError:
+        return f"bad id: {args[0]}"
+    payer = normalize_name(strip_parens(args[1]))
+    if not NAME_RE.match(payer):
+        return f"bad payer: {args[1]}"
+
+    row = conn.execute(
+        "SELECT name, amount, paid_by, recipient FROM expense "
+        "WHERE id=? AND chat_jid=?",
+        (id_, CHAT),
+    ).fetchone()
+    if not row:
+        return f"no entry #{id_}"
+    name, amount, existing_payer, recipient = row
+    if recipient:
+        return f"#{id_} is a direct payment, not a credit entry"
+    if existing_payer:
+        return f"#{id_} already settled: paid by *{existing_payer}*"
+
+    conn.execute(
+        "UPDATE expense SET paid_by=? WHERE id=? AND chat_jid=?",
+        (payer, id_, CHAT),
+    )
+    conn.commit()
+    return f"✅ #{id_} *{name}* {fmt_amt(amount)} — now paid by *{payer}*"
+
+
+def cmd_credit(_args=None):
+    """List every credit (unpaid) expense: paid_by IS NULL, no recipient."""
+    rows = conn.execute(
+        "SELECT id, name, amount, note, created_at "
+        "FROM expense WHERE chat_jid=? AND paid_by IS NULL AND recipient IS NULL "
+        "ORDER BY created_at",
+        (CHAT,),
+    ).fetchall()
+    if not rows:
+        return "no credit entries — all expenses are paid."
+    import datetime as _dt
+    lines = [f"💳 *Credit / unpaid* ({len(rows)})"]
+    total = 0.0
+    for id_, name, amount, note, ts in rows:
+        when = _dt.datetime.fromtimestamp(ts).strftime("%d %b")
+        line = f"  #{id_}  {name} {fmt_amt(amount)}  _{when}_"
+        if note:
+            line += f"  — {note}"
+        lines.append(line)
+        total += amount
+    lines.append("")
+    lines.append(f"total open: *{fmt_amt(total)}*")
+    lines.append(f"settle with: `settle <id> <payer>`")
+    return "\n".join(lines)
+
+
 def cmd_clear(_args):
     cur = conn.execute("DELETE FROM expense WHERE chat_jid=?", (CHAT,))
     conn.execute("DELETE FROM expense_group WHERE chat_jid=?", (CHAT,))
@@ -463,6 +535,11 @@ def cmd_who(_args=None):
 ROUTES = {
     "add": cmd_add,
     "pay": cmd_pay,
+    "settle": cmd_settle,
+    "credit": cmd_credit,
+    "due": cmd_credit,
+    "monthend": cmd_credit,
+    "open": cmd_credit,
     "members": cmd_members,
     "member": cmd_members,
     "split": cmd_split,

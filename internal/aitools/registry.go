@@ -94,6 +94,9 @@ func (r *Registry) RegisterAll() {
 	r.Register(expenseTotalTool())
 	r.Register(expenseListTool())
 	r.Register(expenseDelTool())
+	r.Register(expenseSettleTool())
+	r.Register(expenseListCreditTool())
+	r.Register(expenseAddBulkTool())
 }
 
 // -------- helpers for building a JSON Schema in Go --------

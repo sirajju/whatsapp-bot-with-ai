@@ -260,3 +260,119 @@ func expenseDelTool() Tool {
 		},
 	}
 }
+
+func expenseSettleTool() Tool {
+	return Tool{
+		Spec: ai.ToolSpec{
+			Name: "expense_settle",
+			Description: "Mark a credit (unpaid) expense as paid by a specific member. " +
+				"Use when someone settles the shop tab or month-end bill. " +
+				"Only works on entries that currently have no paid_by set.",
+			Parameters: objectSchema(map[string]any{
+				"id":      intProp("Entry id (from expense_list_credit or expense_list)."),
+				"paid_by": stringProp("Member who paid it off."),
+			}, "id", "paid_by"),
+		},
+		Handler: func(env *ToolEnv, args map[string]any) (string, error) {
+			id := optInt(args, "id")
+			if id <= 0 {
+				return "", fmt.Errorf("id must be > 0")
+			}
+			payer, err := requireString(args, "paid_by")
+			if err != nil {
+				return "", err
+			}
+			return runExpense(env, "settle", strconv.Itoa(id), payer)
+		},
+	}
+}
+
+func expenseListCreditTool() Tool {
+	return Tool{
+		Spec: ai.ToolSpec{
+			Name: "expense_list_credit",
+			Description: "List every unpaid (credit) expense in the current chat with id, name, " +
+				"amount and total open. These are shared expenses with no payer assigned yet — " +
+				"typically a running shop tab to settle at month-end.",
+			Parameters: objectSchema(map[string]any{}),
+		},
+		Handler: func(env *ToolEnv, args map[string]any) (string, error) {
+			return runExpense(env, "credit")
+		},
+	}
+}
+
+func expenseAddBulkTool() Tool {
+	return Tool{
+		Spec: ai.ToolSpec{
+			Name: "expense_add_bulk",
+			Description: "Add several shared expenses at once. Use when the user lists multiple " +
+				"items in a single message (e.g. 'add samad 200, 343, 3434; wifi 340 paid by sirajju'). " +
+				"Guidance for parsing user input: if the user writes amounts joined by '+' or ',' " +
+				"under the same name (like 'samad 200+343+100'), emit ONE item per amount so each is " +
+				"independently editable. Each item has the same fields as expense_add. Items with no " +
+				"paid_by land on credit. Returns a per-item summary.",
+			Parameters: objectSchema(map[string]any{
+				"items": map[string]any{
+					"type":        "array",
+					"description": "Expense entries to insert.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name":    map[string]any{"type": "string", "description": "What was bought (e.g. 'veg', 'wifi')."},
+							"amount":  map[string]any{"type": "number", "description": "Cost."},
+							"paid_by": map[string]any{"type": "string", "description": "Optional: member who paid."},
+							"note":    map[string]any{"type": "string", "description": "Optional free-text note."},
+						},
+						"required": []string{"name", "amount"},
+					},
+				},
+			}, "items"),
+		},
+		Handler: func(env *ToolEnv, args map[string]any) (string, error) {
+			raw, ok := args["items"].([]any)
+			if !ok || len(raw) == 0 {
+				return "", fmt.Errorf("items must be a non-empty array")
+			}
+			var ok_lines, failed []string
+			for i, it := range raw {
+				m, isMap := it.(map[string]any)
+				if !isMap {
+					failed = append(failed, fmt.Sprintf("#%d: not an object", i+1))
+					continue
+				}
+				name := optString(m, "name")
+				amt, hasAmt := optFloat(m, "amount")
+				if name == "" || !hasAmt || amt <= 0 {
+					failed = append(failed, fmt.Sprintf("#%d: need name + positive amount", i+1))
+					continue
+				}
+				cli := []string{"add", name, fmtAmount(amt)}
+				if p := optString(m, "paid_by"); p != "" {
+					cli = append(cli, "("+p+")")
+				}
+				if n := optString(m, "note"); n != "" {
+					cli = append(cli, n)
+				}
+				out, err := runExpense(env, cli...)
+				if err != nil {
+					failed = append(failed, fmt.Sprintf("#%d %s %s: %v", i+1, name, fmtAmount(amt), err))
+					continue
+				}
+				ok_lines = append(ok_lines, "  "+out)
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "Added %d/%d entries:\n", len(ok_lines), len(raw))
+			for _, l := range ok_lines {
+				b.WriteString(l + "\n")
+			}
+			if len(failed) > 0 {
+				b.WriteString("\nFailures:\n")
+				for _, f := range failed {
+					b.WriteString("  " + f + "\n")
+				}
+			}
+			return strings.TrimSpace(b.String()), nil
+		},
+	}
+}
