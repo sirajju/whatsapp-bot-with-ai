@@ -59,7 +59,7 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 	path := filepath.Join(dir, "state.db")
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)

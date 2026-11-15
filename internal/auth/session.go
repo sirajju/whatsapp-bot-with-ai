@@ -25,7 +25,9 @@ func NewClient(ctx context.Context, sessionDir string, log zerolog.Logger) (*wha
 	}
 
 	dbPath := filepath.Join(sessionDir, "store.db")
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", dbPath)
+	// busy_timeout=5s lets whatsmeow's parallel writers wait instead of returning SQLITE_BUSY
+	// when the prekey/identity store sees a burst (history sync, multi-device chats).
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
 
 	container, err := sqlstore.New(ctx, "sqlite", dsn, waLog.Noop)
 	if err != nil {

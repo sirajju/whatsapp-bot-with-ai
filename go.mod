@@ -1,6 +1,6 @@
 module github.com/sirajju/whatsapp-bot-with-ai
 
-go 1.26.0
+go 1.23
 
 require (
 	github.com/joho/godotenv v1.5.1
