@@ -22,9 +22,12 @@ import (
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
 )
 
-// TTS speaks the given text as a voice note.
-// Uses ElevenLabs if ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID are set.
-// Falls back to Microsoft Edge TTS (`edge-tts` CLI, free; pipx install edge-tts).
+// TTS speaks the given text as a voice note. Tries providers in this order:
+//   1. ElevenLabs (if KEY + VOICE_ID set)
+//   2. Groq playai-tts (free, quality — kicks in if GROQ_API_KEY is set)
+//   3. Microsoft Edge TTS (`edge-tts` CLI, if installed)
+// Falls through to the next on a payment/quota/404 error so e.g. an ElevenLabs
+// 402 on a library voice doesn't stop the command from working.
 func TTS() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if len(env.Args) == 0 {
@@ -34,14 +37,43 @@ func TTS() router.Handler {
 		_ = sendText(ctx, env.Cli, env.Chat, "🔊 generating voice…")
 
 		var mp3 []byte
-		var err error
+		var lastErr error
+
+		// 1. ElevenLabs
 		if env.Cfg.ElevenLabsKey != "" && env.Cfg.ElevenLabsVoiceID != "" {
-			mp3, err = elevenlabsTTS(ctx, env.Cfg.ElevenLabsKey, env.Cfg.ElevenLabsVoiceID, text)
-		} else {
-			mp3, err = edgeTTS(ctx, text, "en-US-AriaNeural")
+			b, err := elevenlabsTTS(ctx, env.Cfg.ElevenLabsKey, env.Cfg.ElevenLabsVoiceID, text)
+			if err == nil {
+				mp3 = b
+			} else {
+				lastErr = fmt.Errorf("elevenlabs: %w", err)
+				env.Log.Warn().Err(err).Msg("elevenlabs tts failed, trying fallback")
+			}
 		}
-		if err != nil {
-			return sendText(ctx, env.Cli, env.Chat, "tts: "+err.Error())
+		// 2. Groq playai-tts (free)
+		if mp3 == nil && env.Cfg.GroqKey != "" {
+			b, err := groqTTS(ctx, env.Cfg.GroqKey, text, "Fritz-PlayAI")
+			if err == nil {
+				mp3 = b
+			} else {
+				lastErr = fmt.Errorf("groq: %w", err)
+				env.Log.Warn().Err(err).Msg("groq tts failed, trying fallback")
+			}
+		}
+		// 3. edge-tts
+		if mp3 == nil {
+			b, err := edgeTTS(ctx, text, "en-US-AriaNeural")
+			if err == nil {
+				mp3 = b
+			} else {
+				lastErr = fmt.Errorf("edge-tts: %w", err)
+			}
+		}
+		if mp3 == nil {
+			msg := "no TTS provider worked"
+			if lastErr != nil {
+				msg = msg + ": " + lastErr.Error()
+			}
+			return sendText(ctx, env.Cli, env.Chat, msg)
 		}
 		return sendVoiceNoteFromMP3(ctx, env.Cli, env.Chat, mp3)
 	}
@@ -193,6 +225,36 @@ func elevenlabsClone(ctx context.Context, key, name string, mp3 []byte) (string,
 		return "", fmt.Errorf("clone: no voice_id in response")
 	}
 	return r.VoiceID, nil
+}
+
+// groqTTS uses Groq's playai-tts model (OpenAI-compatible /audio/speech endpoint).
+// Free; produces WAV which we return as-is since sendVoiceNoteFromMP3 pipes it
+// through ffmpeg → ogg/opus and ffmpeg accepts any input format.
+func groqTTS(ctx context.Context, key, text, voice string) ([]byte, error) {
+	body := map[string]any{
+		"model":  "playai-tts",
+		"voice":  voice,
+		"input":  text,
+		"response_format": "wav",
+	}
+	buf, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		"https://api.groq.com/openai/v1/audio/speech", bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpCli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		errb, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(errb))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // edgeTTS shells to the `edge-tts` CLI (free Microsoft Edge TTS; `pipx install edge-tts`).

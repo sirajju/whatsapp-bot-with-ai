@@ -58,7 +58,7 @@ func Load() (*Config, error) {
 		OllamaURL:       os.Getenv("OLLAMA_URL"),
 		OllamaModel:     getenv("OLLAMA_MODEL", "llama3.2"),
 		GroqKey:         os.Getenv("GROQ_API_KEY"),
-		GroqModel:       getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+		GroqModel:       getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
 		AnthropicKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		AnthropicMdl:    getenv("ANTHROPIC_MODEL", "claude-haiku-5-5"),
 		OpenAIKey:       os.Getenv("OPENAI_API_KEY"),
