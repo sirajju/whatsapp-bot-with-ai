@@ -84,6 +84,13 @@ func main() {
 	r.Register("clearai", "wipe AI chat memory for this chat", commands.ClearAI())
 	r.Register("persona", "switch AI persona for this chat", commands.SetPersona())
 	r.Register("run", "owner: run a script from ./scripts/", commands.Run())
+	// Personal productivity
+	r.Register("remind", "set a reminder (e.g. 1h30m or 2d)", commands.Remind())
+	r.Register("reminders", "list pending reminders", commands.Reminders())
+	r.Register("unremind", "cancel a reminder by id", commands.Unremind())
+	r.Register("todo", "todo add/list/done/del", commands.Todo())
+	r.Register("skill", "run a skill from ./skills/", commands.Skill())
+	r.Register("skills", "list available skills", commands.Skills())
 	// Stickers
 	r.Register("sticker", "reply to image/video → sticker", commands.Sticker(), "s")
 	r.Register("toimg", "reply to a sticker → jpeg image", commands.Toimg())
@@ -160,6 +167,9 @@ func main() {
 			log.Fatal().Err(err).Msg("pairing")
 		}
 	}
+
+	// Kick off background jobs (reminders)
+	commands.StartReminderLoop(ctx, cli, st, log)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

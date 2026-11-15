@@ -146,6 +146,10 @@ func (r *Router) buildEnv(evt *events.Message, text string) *Env {
 	}
 }
 
+// ParseJIDSafe is a small helper exposed so other packages (e.g. reminder loop) can parse a
+// stored JID string without re-importing whatsmeow/types everywhere.
+func ParseJIDSafe(s string) (types.JID, error) { return types.ParseJID(s) }
+
 // ExtractText returns the human-readable text of a message, from any of the common wrappers.
 func ExtractText(evt *events.Message) string {
 	m := evt.Message

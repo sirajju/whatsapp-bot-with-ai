@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+var _ = time.Now // time is used for timestamps in other files; keep import stable
+
 type Store struct {
 	db *sql.DB
 }
@@ -66,6 +68,25 @@ CREATE TABLE IF NOT EXISTS tts_voice (
   chat_jid TEXT PRIMARY KEY,
   voice    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS reminders (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_jid   TEXT NOT NULL,
+  sender_jid TEXT NOT NULL,
+  remind_at  INTEGER NOT NULL,
+  text       TEXT NOT NULL,
+  fired      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS reminders_pending ON reminders(fired, remind_at);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_jid   TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  done       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS todos_user ON todos(user_jid, done, created_at);
 `
 
 // Open opens (or creates) the sqlite file at dir/state.db and applies the schema.
@@ -295,6 +316,152 @@ func (s *Store) GetTTSVoice(ctx context.Context, chatJID string) string {
 	_ = s.db.QueryRowContext(ctx,
 		`SELECT voice FROM tts_voice WHERE chat_jid=?`, chatJID).Scan(&v)
 	return v
+}
+
+// ---------- Reminders ----------
+
+type Reminder struct {
+	ID        int64
+	ChatJID   string
+	SenderJID string
+	RemindAt  int64 // unix seconds
+	Text      string
+}
+
+func (s *Store) AddReminder(ctx context.Context, chatJID, senderJID string, remindAt int64, text string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO reminders(chat_jid, sender_jid, remind_at, text) VALUES(?,?,?,?)`,
+		chatJID, senderJID, remindAt, text)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// DueReminders returns all unfired reminders whose remind_at <= now.
+func (s *Store) DueReminders(ctx context.Context, now int64) ([]Reminder, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, chat_jid, sender_jid, remind_at, text FROM reminders WHERE fired=0 AND remind_at<=? ORDER BY remind_at`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Reminder
+	for rows.Next() {
+		var r Reminder
+		if err := rows.Scan(&r.ID, &r.ChatJID, &r.SenderJID, &r.RemindAt, &r.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *Store) MarkFired(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE reminders SET fired=1 WHERE id=?`, id)
+	return err
+}
+
+// ListReminders returns pending reminders for a specific user.
+func (s *Store) ListReminders(ctx context.Context, senderJID string) ([]Reminder, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, chat_jid, sender_jid, remind_at, text FROM reminders WHERE fired=0 AND sender_jid=? ORDER BY remind_at`, senderJID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Reminder
+	for rows.Next() {
+		var r Reminder
+		if err := rows.Scan(&r.ID, &r.ChatJID, &r.SenderJID, &r.RemindAt, &r.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// CancelReminder deletes a pending reminder, but only if the sender owns it.
+func (s *Store) CancelReminder(ctx context.Context, id int64, senderJID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM reminders WHERE id=? AND sender_jid=? AND fired=0`, id, senderJID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// ---------- Todos ----------
+
+type Todo struct {
+	ID        int64
+	Text      string
+	Done      bool
+	CreatedAt int64
+}
+
+func (s *Store) AddTodo(ctx context.Context, userJID, text string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO todos(user_jid, text, created_at) VALUES(?,?,strftime('%s','now'))`,
+		userJID, text)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListTodos returns the user's todos. If includeDone is false only pending ones are returned.
+func (s *Store) ListTodos(ctx context.Context, userJID string, includeDone bool) ([]Todo, error) {
+	q := `SELECT id, text, done, created_at FROM todos WHERE user_jid=?`
+	if !includeDone {
+		q += ` AND done=0`
+	}
+	q += ` ORDER BY done, created_at`
+	rows, err := s.db.QueryContext(ctx, q, userJID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		var t Todo
+		var done int
+		if err := rows.Scan(&t.ID, &t.Text, &done, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		t.Done = done == 1
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// MarkTodoDone toggles done on the nth pending todo (1-indexed, user-scoped).
+func (s *Store) MarkTodoDone(ctx context.Context, userJID string, idx int) (string, error) {
+	todos, err := s.ListTodos(ctx, userJID, false)
+	if err != nil {
+		return "", err
+	}
+	if idx < 1 || idx > len(todos) {
+		return "", fmt.Errorf("no todo #%d", idx)
+	}
+	t := todos[idx-1]
+	_, err = s.db.ExecContext(ctx, `UPDATE todos SET done=1 WHERE id=?`, t.ID)
+	return t.Text, err
+}
+
+// DelTodo deletes the nth todo (1-indexed, user-scoped, counts both done and pending).
+func (s *Store) DelTodo(ctx context.Context, userJID string, idx int) (string, error) {
+	todos, err := s.ListTodos(ctx, userJID, true)
+	if err != nil {
+		return "", err
+	}
+	if idx < 1 || idx > len(todos) {
+		return "", fmt.Errorf("no todo #%d", idx)
+	}
+	t := todos[idx-1]
+	_, err = s.db.ExecContext(ctx, `DELETE FROM todos WHERE id=?`, t.ID)
+	return t.Text, err
 }
 
 func (s *Store) ListVoices(ctx context.Context) ([]string, error) {
