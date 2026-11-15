@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS voices (
   name     TEXT PRIMARY KEY,
   voice_id TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tts_voice (
+  chat_jid TEXT PRIMARY KEY,
+  voice    TEXT NOT NULL
+);
 `
 
 // Open opens (or creates) the sqlite file at dir/state.db and applies the schema.
@@ -274,6 +279,22 @@ func (s *Store) GetVoice(ctx context.Context, name string) (string, bool) {
 		return "", false
 	}
 	return v, true
+}
+
+// ---------- Per-chat TTS voice ----------
+
+func (s *Store) SetTTSVoice(ctx context.Context, chatJID, voice string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO tts_voice(chat_jid, voice) VALUES(?,?)
+ON CONFLICT(chat_jid) DO UPDATE SET voice=excluded.voice`, chatJID, voice)
+	return err
+}
+
+func (s *Store) GetTTSVoice(ctx context.Context, chatJID string) string {
+	var v string
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT voice FROM tts_voice WHERE chat_jid=?`, chatJID).Scan(&v)
+	return v
 }
 
 func (s *Store) ListVoices(ctx context.Context) ([]string, error) {

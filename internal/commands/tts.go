@@ -51,7 +51,11 @@ func TTS() router.Handler {
 		}
 		// 2. Groq Orpheus TTS (free)
 		if mp3 == nil && env.Cfg.GroqKey != "" {
-			b, err := groqTTS(ctx, env.Cfg.GroqKey, text, "tara")
+			voice := env.Store.GetTTSVoice(ctx, env.Chat.String())
+			if voice == "" {
+				voice = "tara"
+			}
+			b, err := groqTTS(ctx, env.Cfg.GroqKey, text, voice)
 			if err == nil {
 				mp3 = b
 			} else {
@@ -143,7 +147,41 @@ func CloneVoice() router.Handler {
 	}
 }
 
-// Voices lists all saved voices.
+// OrpheusVoices are the voices available on the free Groq Orpheus TTS model.
+var OrpheusVoices = []string{"tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"}
+
+// TTSVoice sets (or shows) the default Groq Orpheus voice for this chat.
+func TTSVoice() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		if len(env.Args) == 0 {
+			current := env.Store.GetTTSVoice(ctx, env.Chat.String())
+			if current == "" {
+				current = "tara"
+			}
+			return sendText(ctx, env.Cli, env.Chat,
+				fmt.Sprintf("current TTS voice: *%s*\navailable: %s\nchange: %sttsvoice <name>",
+					current, strings.Join(OrpheusVoices, ", "), env.Cfg.Prefix))
+		}
+		name := strings.ToLower(env.Args[0])
+		ok := false
+		for _, v := range OrpheusVoices {
+			if v == name {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return sendText(ctx, env.Cli, env.Chat,
+				"unknown voice. Available: "+strings.Join(OrpheusVoices, ", "))
+		}
+		if err := env.Store.SetTTSVoice(ctx, env.Chat.String(), name); err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "ttsvoice: "+err.Error())
+		}
+		return sendText(ctx, env.Cli, env.Chat, "🔊 TTS voice set to *"+name+"*")
+	}
+}
+
+// Voices lists all saved cloned voices (ElevenLabs).
 func Voices() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		names, err := env.Store.ListVoices(ctx)

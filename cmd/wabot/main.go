@@ -117,6 +117,7 @@ func main() {
 	r.Register("restart", "owner: exit (expects supervisor to respawn)", commands.Restart())
 	// Voice
 	r.Register("tts", "text → voice note", commands.TTS())
+	r.Register("ttsvoice", "pick Groq Orpheus voice for this chat", commands.TTSVoice())
 	r.Register("voice", "speak text with a cloned voice", commands.Voice())
 	r.Register("clonevoice", "owner: clone a voice from quoted voice note", commands.CloneVoice())
 	r.Register("voices", "list cloned voices", commands.Voices())
