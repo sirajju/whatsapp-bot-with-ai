@@ -11,14 +11,12 @@ import (
 	"strings"
 
 	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
-// ExtractQuotedMedia returns the raw bytes + mime type of the image/video attached to
-// the current message or (if replied) its quoted message. Error if nothing qualifies.
+// ExtractQuotedMedia returns the raw bytes + mime type of the image/video
+// attached to the current message or (if replied) its quoted message.
 func ExtractQuotedMedia(ctx context.Context, cli *whatsmeow.Client, evt *events.Message) ([]byte, string, error) {
-	// 1. Direct attach on this message
 	if img := evt.Message.GetImageMessage(); img != nil {
 		b, err := cli.Download(ctx, img)
 		return b, img.GetMimetype(), err
@@ -27,8 +25,6 @@ func ExtractQuotedMedia(ctx context.Context, cli *whatsmeow.Client, evt *events.
 		b, err := cli.Download(ctx, vid)
 		return b, vid.GetMimetype(), err
 	}
-
-	// 2. Reply (quoted) media
 	ext := evt.Message.GetExtendedTextMessage()
 	if ext == nil {
 		return nil, "", fmt.Errorf("no media")
@@ -38,29 +34,36 @@ func ExtractQuotedMedia(ctx context.Context, cli *whatsmeow.Client, evt *events.
 		return nil, "", fmt.Errorf("no quoted media")
 	}
 	if img := q.GetImageMessage(); img != nil {
-		b, err := downloadQuoted(ctx, cli, img)
+		b, err := cli.Download(ctx, img)
 		return b, img.GetMimetype(), err
 	}
 	if vid := q.GetVideoMessage(); vid != nil {
-		b, err := downloadQuoted(ctx, cli, vid)
+		b, err := cli.Download(ctx, vid)
 		return b, vid.GetMimetype(), err
 	}
 	return nil, "", fmt.Errorf("no image or video to convert")
 }
 
-// downloadQuoted re-wraps a quoted media message so cli.Download() sees a standalone one.
-func downloadQuoted(ctx context.Context, cli *whatsmeow.Client, m any) ([]byte, error) {
-	switch v := m.(type) {
-	case *waE2E.ImageMessage:
-		return cli.Download(ctx, v)
-	case *waE2E.VideoMessage:
-		return cli.Download(ctx, v)
-	default:
-		return nil, fmt.Errorf("unsupported quoted media type")
+// ExtractQuotedSticker returns raw webp bytes of a quoted (or current) sticker.
+func ExtractQuotedSticker(ctx context.Context, cli *whatsmeow.Client, evt *events.Message) ([]byte, error) {
+	if s := evt.Message.GetStickerMessage(); s != nil {
+		return cli.Download(ctx, s)
 	}
+	ext := evt.Message.GetExtendedTextMessage()
+	if ext == nil {
+		return nil, fmt.Errorf("no sticker")
+	}
+	q := ext.GetContextInfo().GetQuotedMessage()
+	if q == nil {
+		return nil, fmt.Errorf("no quoted sticker")
+	}
+	if s := q.GetStickerMessage(); s != nil {
+		return cli.Download(ctx, s)
+	}
+	return nil, fmt.Errorf("quoted message is not a sticker")
 }
 
-// ToWebPSticker re-encodes raw media into a 512x512 WebP (image if image/*, animated if video/*).
+// ToWebPSticker re-encodes raw media into a 512x512 WebP (animated if video/*).
 func ToWebPSticker(ctx context.Context, raw []byte, mime string) ([]byte, error) {
 	tmpDir, err := os.MkdirTemp("", "wabot-sticker-*")
 	if err != nil {
@@ -77,16 +80,25 @@ func ToWebPSticker(ctx context.Context, raw []byte, mime string) ([]byte, error)
 	case strings.Contains(mime, "webp"):
 		inExt = ".webp"
 	}
-
 	inPath := filepath.Join(tmpDir, "in"+inExt)
 	outPath := filepath.Join(tmpDir, "out.webp")
 	if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 		return nil, err
 	}
 
-	var args []string
+	args := buildFFmpegArgs(inPath, outPath, mime)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg: %w: %s", err, stderr.String())
+	}
+	return os.ReadFile(outPath)
+}
+
+func buildFFmpegArgs(inPath, outPath, mime string) []string {
 	if strings.HasPrefix(mime, "video/") {
-		args = []string{
+		return []string{
 			"-y", "-i", inPath,
 			"-vcodec", "libwebp",
 			"-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,fps=12",
@@ -94,17 +106,63 @@ func ToWebPSticker(ctx context.Context, raw []byte, mime string) ([]byte, error)
 			"-preset", "default", "-an", "-vsync", "0",
 			outPath,
 		}
-	} else {
-		args = []string{
-			"-y", "-i", inPath,
-			"-vcodec", "libwebp",
-			"-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
-			"-preset", "default",
-			outPath,
-		}
 	}
+	return []string{
+		"-y", "-i", inPath,
+		"-vcodec", "libwebp",
+		"-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
+		"-preset", "default",
+		outPath,
+	}
+}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+// StickerToJPEG re-encodes a webp sticker back to jpeg.
+func StickerToJPEG(ctx context.Context, webp []byte) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "wabot-toimg-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	inPath := filepath.Join(tmpDir, "in.webp")
+	outPath := filepath.Join(tmpDir, "out.jpg")
+	if err := os.WriteFile(inPath, webp, 0o644); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-y", "-i", inPath, "-frames:v", "1", "-q:v", "2", outPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg: %w: %s", err, stderr.String())
+	}
+	return os.ReadFile(outPath)
+}
+
+// TextSticker renders text as a 512x512 WebP sticker via ffmpeg drawtext.
+func TextSticker(ctx context.Context, text string) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "wabot-stext-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outPath := filepath.Join(tmpDir, "out.webp")
+	safe := strings.NewReplacer(`\`, "", `:`, " ", `'`, "", `"`, "").Replace(text)
+	font := "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+	if _, err := os.Stat(font); err != nil {
+		font = ""
+	}
+	drawtext := "drawtext=text='" + safe +
+		"':fontcolor=white:fontsize=64:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2"
+	if font != "" {
+		drawtext = "drawtext=fontfile=" + font + ":text='" + safe +
+			"':fontcolor=white:fontsize=64:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2"
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-y", "-f", "lavfi", "-i", "color=c=black@0:s=512x512:d=1",
+		"-frames:v", "1", "-vf", drawtext,
+		"-vcodec", "libwebp", outPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

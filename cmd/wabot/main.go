@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,14 +18,16 @@ import (
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/commands"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/store"
 )
 
 func main() {
+	commands.SetOSExit(os.Exit)
+
 	cfg, err := config.Load()
 	if err != nil {
 		panicLog("config", err)
 	}
-
 	lvl, _ := zerolog.ParseLevel(cfg.LogLevel)
 	if lvl == zerolog.NoLevel {
 		lvl = zerolog.InfoLevel
@@ -35,13 +38,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// State store (sqlite) lives alongside the session DB.
+	st, err := store.Open(filepath.Join(cfg.SessionDir, "state"))
+	if err != nil {
+		log.Fatal().Err(err).Msg("open store")
+	}
+	defer st.Close()
+
 	cli, err := auth.NewClient(ctx, cfg.SessionDir, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("new client")
 	}
 
-	// Build router and register commands.
-	r := router.New(cli, cfg, log)
+	// Build router + register commands.
+	r := router.New(cli, cfg, st, log)
 	provider := ai.Pick(ai.Config{
 		OllamaURL: cfg.OllamaURL, OllamaModel: cfg.OllamaModel,
 		GroqKey: cfg.GroqKey, GroqModel: cfg.GroqModel,
@@ -52,22 +62,61 @@ func main() {
 	if provider != nil {
 		log.Info().Str("provider", provider.Name()).Msg("AI provider ready")
 	} else {
-		log.Info().Msg("no AI provider configured (!ai will report so)")
+		log.Info().Msg("no AI provider configured")
 	}
 
-	start := time.Now()
-	r.Register("ping", "liveness check", commands.Ping(start))
-	r.Register("ai", "ask the configured LLM", commands.AI(provider))
-	r.Register("sticker", "reply to image/video to turn into sticker", commands.Sticker())
-	r.Register("kick", "owner-only: remove quoted user from group", commands.Kick())
-	// menu is registered last so it sees every other command.
-	r.Register("menu", "show this list", commands.Menu(r.Help()))
+	// Passive hooks run before command dispatch, in order.
+	r.AddHook(commands.BlocklistHook())
+	r.AddHook(commands.AntilinkHook())
 
-	// Wire event handler.
+	start := time.Now()
+	// Core
+	r.Register("ping", "liveness check", commands.Ping(start))
+	// AI
+	r.Register("ai", "ask the configured LLM", commands.AI(provider), "chat", "gpt")
+	r.Register("clearai", "wipe AI chat memory for this chat", commands.ClearAI())
+	r.Register("persona", "switch AI persona for this chat", commands.SetPersona())
+	// Stickers
+	r.Register("sticker", "reply to image/video → sticker", commands.Sticker(), "s")
+	r.Register("toimg", "reply to a sticker → jpeg image", commands.Toimg())
+	r.Register("stext", "render text as a sticker", commands.Stext())
+	// Group moderation
+	r.Register("kick", "owner: remove quoted/named user", commands.Kick())
+	r.Register("add", "owner: add a user by phone", commands.Add())
+	r.Register("promote", "owner: promote to admin", commands.Promote())
+	r.Register("demote", "owner: demote admin", commands.Demote())
+	r.Register("mute", "owner: lock group to admins-only", commands.Mute())
+	r.Register("unmute", "owner: unlock group", commands.Unmute())
+	r.Register("warn", "owner: warn user (auto-kick at 3)", commands.Warn())
+	r.Register("warns", "show warn count", commands.Warns())
+	r.Register("unwarn", "owner: clear warns", commands.Unwarn())
+	r.Register("antilink", "owner: toggle link removal (on/off)", commands.Antilink())
+	r.Register("welcome", "owner: set welcome message", commands.SetWelcome())
+	r.Register("goodbye", "owner: set goodbye message", commands.SetGoodbye())
+	// Downloader + fun
+	r.Register("dl", "download video from URL (yt-dlp)", commands.Download(), "download")
+	r.Register("tr", "translate text", commands.Translate(), "translate")
+	r.Register("weather", "weather by city", commands.Weather())
+	r.Register("8ball", "magic 8 ball", commands.EightBall())
+	r.Register("roll", "roll dice (!roll 2d20)", commands.Roll())
+	r.Register("calc", "arithmetic calculator", commands.Calc())
+	r.Register("quote", "random inspirational quote", commands.Quote())
+	r.Register("lyrics", "fetch song lyrics", commands.Lyrics())
+	// Admin
+	r.Register("broadcast", "owner: send to every joined group", commands.Broadcast())
+	r.Register("block", "owner: block a user from the bot", commands.Block())
+	r.Register("unblock", "owner: unblock a user", commands.Unblock())
+	r.Register("restart", "owner: exit (expects supervisor to respawn)", commands.Restart())
+	// Menu last so it sees everything else.
+	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
+
+	// Wire whatsmeow event handler.
 	cli.AddEventHandler(func(evt any) {
 		switch e := evt.(type) {
 		case *events.Message:
 			r.Dispatch(ctx, e)
+		case *events.GroupInfo:
+			commands.GroupParticipantHandler(cli, st)(e)
 		case *events.Connected:
 			log.Info().Msg("connected")
 		case *events.Disconnected:
@@ -77,7 +126,6 @@ func main() {
 		}
 	})
 
-	// Login.
 	switch strings.ToLower(cfg.LoginMode) {
 	case "qr":
 		if err := auth.LoginQR(ctx, cli, log); err != nil {
@@ -89,7 +137,6 @@ func main() {
 		}
 	}
 
-	// Wait for Ctrl-C / SIGTERM.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -98,7 +145,6 @@ func main() {
 }
 
 func panicLog(where string, err error) {
-	// Use stderr directly before zerolog is up.
 	os.Stderr.WriteString(where + ": " + err.Error() + "\n")
 	os.Exit(1)
 }

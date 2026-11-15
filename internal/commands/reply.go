@@ -9,10 +9,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// sendText is a tiny helper: send a plain text reply to chat.
 func sendText(ctx context.Context, cli *whatsmeow.Client, chat types.JID, text string) error {
 	_, err := cli.SendMessage(ctx, chat, &waE2E.Message{
 		Conversation: proto.String(text),
 	})
 	return err
 }
+
+func stringPtr(s string) *string { return &s }
+func uint64Ptr(u uint64) *uint64 { return &u }
