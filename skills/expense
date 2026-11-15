@@ -416,29 +416,41 @@ def cmd_total(_args=None):
 
 
 def cmd_list(args):
-    n = 10
+    # No arg → every entry for the chat. "list N" → last N only.
+    sql = (
+        "SELECT id, name, amount, paid_by, recipient, note "
+        "FROM expense WHERE chat_jid=? ORDER BY created_at DESC"
+    )
+    params = [CHAT]
+    limited = False
     if args:
         try:
-            n = max(1, min(50, int(args[0])))
+            n = max(1, min(500, int(args[0])))
+            sql += " LIMIT ?"
+            params.append(n)
+            limited = True
         except ValueError:
             pass
-    rows = conn.execute(
-        "SELECT id, name, amount, paid_by, recipient, note "
-        "FROM expense WHERE chat_jid=? ORDER BY created_at DESC LIMIT ?",
-        (CHAT, n),
-    ).fetchall()
+    rows = conn.execute(sql, tuple(params)).fetchall()
     if not rows:
         return "no expenses yet."
-    out = [f"last {len(rows)}:"]
+    header = f"last {len(rows)}:" if limited else f"all {len(rows)} entries:"
+    out = [header]
+    total = 0.0
     for id_, name, amount, paid_by, recipient, note in rows:
         line = f"  #{id_}  {name} {fmt_amt(amount)}"
         if recipient:
             line += f" ({paid_by}→{recipient})"
         elif paid_by:
             line += f" ({paid_by})"
+        else:
+            line += " _credit_"
         if note:
-            line += f"  _{note}_"
+            line += f"  — {note}"
         out.append(line)
+        total += amount
+    out.append("")
+    out.append(f"sum shown: *{fmt_amt(total)}*  (delete with `del <id>` or `rm <id>`)")
     return "\n".join(out)
 
 

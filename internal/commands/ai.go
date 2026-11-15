@@ -179,6 +179,7 @@ func runAIToolLoop(ctx context.Context, env *router.Env, provider ai.TooledProvi
 		Ctx:       ctx,
 		Store:     env.Store,
 		Cfg:       env.Cfg,
+		Cli:       env.Cli,
 		SenderJID: env.Sender.String(),
 		ChatJID:   env.Chat.String(),
 		Log:       env.Log,

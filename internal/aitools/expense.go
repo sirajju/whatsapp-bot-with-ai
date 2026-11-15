@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow/types"
+
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/ai"
 )
 
@@ -298,6 +300,42 @@ func expenseListCreditTool() Tool {
 		},
 		Handler: func(env *ToolEnv, args map[string]any) (string, error) {
 			return runExpense(env, "credit")
+		},
+	}
+}
+
+func expenseSyncGroupTool() Tool {
+	return Tool{
+		Spec: ai.ToolSpec{
+			Name: "expense_sync_group_description",
+			Description: "Overwrite the current WhatsApp group's description with the latest " +
+				"expense totals (balance summary and credit). Group chats only. Use when the user " +
+				"asks to 'post' or 'pin' or 'show in group info' the current balances.",
+			Parameters: objectSchema(map[string]any{}),
+		},
+		Handler: func(env *ToolEnv, args map[string]any) (string, error) {
+			if env.Cli == nil {
+				return "", fmt.Errorf("whatsmeow client not available")
+			}
+			jid, err := types.ParseJID(env.ChatJID)
+			if err != nil {
+				return "", fmt.Errorf("bad chat jid: %w", err)
+			}
+			if jid.Server != types.GroupServer {
+				return "", fmt.Errorf("sync only works in group chats")
+			}
+			total, err := runExpense(env, "total")
+			if err != nil {
+				return "", err
+			}
+			desc := total
+			if len(desc) > 1500 {
+				desc = desc[:1500] + "…"
+			}
+			if err := env.Cli.SetGroupDescription(env.Ctx, jid, desc); err != nil {
+				return "", fmt.Errorf("set description: %w", err)
+			}
+			return "group description updated with latest expense totals.", nil
 		},
 	}
 }

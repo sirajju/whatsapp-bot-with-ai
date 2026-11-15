@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/whatsmeow"
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/ai"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
@@ -18,6 +19,7 @@ type ToolEnv struct {
 	Ctx       context.Context
 	Store     *store.Store
 	Cfg       *config.Config
+	Cli       *whatsmeow.Client // used by tools that touch WhatsApp directly (e.g. expense sync)
 	SenderJID string
 	ChatJID   string
 	Log       zerolog.Logger
@@ -97,6 +99,7 @@ func (r *Registry) RegisterAll() {
 	r.Register(expenseSettleTool())
 	r.Register(expenseListCreditTool())
 	r.Register(expenseAddBulkTool())
+	r.Register(expenseSyncGroupTool())
 }
 
 // -------- helpers for building a JSON Schema in Go --------

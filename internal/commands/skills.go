@@ -38,8 +38,6 @@ func Skill() router.Handler {
 			return sendText(ctx, env.Cli, env.Chat,
 				"skill "+name+" is not executable. On the server: chmod +x skills/"+name)
 		}
-		_ = sendText(ctx, env.Cli, env.Chat, "⚙️ running "+name+"…")
-
 		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(runCtx, "./"+path, env.Args[1:]...)
@@ -59,14 +57,16 @@ func Skill() router.Handler {
 			result = result[:3500] + "\n…(truncated)"
 		}
 		if err != nil {
+			// Errors go in a code block so shell/stderr lines stay readable.
 			return sendText(ctx, env.Cli, env.Chat,
 				fmt.Sprintf("❌ %s failed: %s\n```\n%s\n```", name, err.Error(), result))
 		}
 		if result == "" {
 			result = "(no output)"
 		}
-		return sendText(ctx, env.Cli, env.Chat,
-			fmt.Sprintf("✅ %s\n```\n%s\n```", name, result))
+		// Success: send raw — code-block wrapping would break WhatsApp
+		// formatting (*bold*, _italic_) that the skill emits intentionally.
+		return sendText(ctx, env.Cli, env.Chat, result)
 	}
 }
 
