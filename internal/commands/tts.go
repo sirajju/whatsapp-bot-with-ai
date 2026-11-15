@@ -49,9 +49,9 @@ func TTS() router.Handler {
 				env.Log.Warn().Err(err).Msg("elevenlabs tts failed, trying fallback")
 			}
 		}
-		// 2. Groq playai-tts (free)
+		// 2. Groq Orpheus TTS (free)
 		if mp3 == nil && env.Cfg.GroqKey != "" {
-			b, err := groqTTS(ctx, env.Cfg.GroqKey, text, "Fritz-PlayAI")
+			b, err := groqTTS(ctx, env.Cfg.GroqKey, text, "tara")
 			if err == nil {
 				mp3 = b
 			} else {
@@ -227,14 +227,14 @@ func elevenlabsClone(ctx context.Context, key, name string, mp3 []byte) (string,
 	return r.VoiceID, nil
 }
 
-// groqTTS uses Groq's playai-tts model (OpenAI-compatible /audio/speech endpoint).
-// Free; produces WAV which we return as-is since sendVoiceNoteFromMP3 pipes it
-// through ffmpeg → ogg/opus and ffmpeg accepts any input format.
+// groqTTS uses Groq's Canopy Labs Orpheus model (free, English).
+// Voices on orpheus-v1-english: tara (default), leah, jess, leo, dan, mia, zac, zoe.
+// Produces WAV which sendVoiceNoteFromMP3 re-encodes to ogg/opus through ffmpeg.
 func groqTTS(ctx context.Context, key, text, voice string) ([]byte, error) {
 	body := map[string]any{
-		"model":  "playai-tts",
-		"voice":  voice,
-		"input":  text,
+		"model":           "canopylabs/orpheus-v1-english",
+		"voice":           voice,
+		"input":           text,
 		"response_format": "wav",
 	}
 	buf, _ := json.Marshal(body)
