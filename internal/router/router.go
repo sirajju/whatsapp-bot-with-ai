@@ -11,15 +11,17 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/store"
 )
 
-// Handler is a command implementation. Returning an error logs it; nothing is sent back.
+// Handler is a command implementation.
 type Handler func(ctx context.Context, env *Env) error
 
 // Env is the per-invocation context passed to a Handler.
 type Env struct {
 	Cli     *whatsmeow.Client
 	Cfg     *config.Config
+	Store   *store.Store
 	Log     zerolog.Logger
 	Msg     *events.Message
 	Chat    types.JID
@@ -31,44 +33,60 @@ type Env struct {
 	RawText string
 }
 
+// Hook runs before dispatch for every message. Return true to swallow the message
+// (no command dispatch, no further hooks). Used for antilink, blocklist, etc.
+type Hook func(ctx context.Context, env *Env) bool
+
 type Router struct {
 	cli      *whatsmeow.Client
 	cfg      *config.Config
+	st       *store.Store
 	log      zerolog.Logger
 	handlers map[string]Handler
+	aliases  map[string]string
 	help     map[string]string
+	hooks    []Hook
 }
 
-func New(cli *whatsmeow.Client, cfg *config.Config, log zerolog.Logger) *Router {
+func New(cli *whatsmeow.Client, cfg *config.Config, st *store.Store, log zerolog.Logger) *Router {
 	return &Router{
 		cli:      cli,
 		cfg:      cfg,
+		st:       st,
 		log:      log,
 		handlers: make(map[string]Handler),
+		aliases:  make(map[string]string),
 		help:     make(map[string]string),
 	}
 }
 
-// Register wires a command name (lowercase, no prefix) to its handler.
-func (r *Router) Register(name, help string, h Handler) {
-	r.handlers[strings.ToLower(name)] = h
-	r.help[strings.ToLower(name)] = help
+func (r *Router) Register(name, help string, h Handler, aliases ...string) {
+	name = strings.ToLower(name)
+	r.handlers[name] = h
+	r.help[name] = help
+	for _, a := range aliases {
+		r.aliases[strings.ToLower(a)] = name
+	}
 }
+
+func (r *Router) AddHook(h Hook) { r.hooks = append(r.hooks, h) }
 
 func (r *Router) Help() map[string]string { return r.help }
 
 // Dispatch parses a message event and calls the matching handler, if any.
 func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
-	text := extractText(evt)
+	text := ExtractText(evt)
 	if text == "" {
 		return
 	}
+	env := r.buildEnv(evt, text)
 
-	isGroup := evt.Info.IsGroup
-	if isGroup && !r.cfg.RespondInGroups {
-		return
+	// Run hooks (antilink, blocklist) — they can swallow the message.
+	for _, h := range r.hooks {
+		if h(ctx, env) {
+			return
+		}
 	}
-	// A group_trigger=mention_only flag could gate on @mention; left as a TODO for now.
 
 	if !strings.HasPrefix(text, r.cfg.Prefix) {
 		return
@@ -78,11 +96,24 @@ func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
 		return
 	}
 	cmd := strings.ToLower(fields[0])
+	if alias, ok := r.aliases[cmd]; ok {
+		cmd = alias
+	}
 	h, ok := r.handlers[cmd]
 	if !ok {
 		return
 	}
+	env.Cmd = cmd
+	env.Args = fields[1:]
+	env.Log = env.Log.With().Str("cmd", cmd).Logger()
 
+	if err := h(ctx, env); err != nil {
+		env.Log.Error().Err(err).Msg("command failed")
+	}
+}
+
+func (r *Router) buildEnv(evt *events.Message, text string) *Env {
+	isGroup := evt.Info.IsGroup
 	sender := evt.Info.Sender
 	isOwner := false
 	for _, o := range r.cfg.Owners {
@@ -91,27 +122,22 @@ func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
 			break
 		}
 	}
-
-	env := &Env{
+	return &Env{
 		Cli:     r.cli,
 		Cfg:     r.cfg,
-		Log:     r.log.With().Str("cmd", cmd).Str("chat", evt.Info.Chat.String()).Logger(),
+		Store:   r.st,
+		Log:     r.log.With().Str("chat", evt.Info.Chat.String()).Logger(),
 		Msg:     evt,
 		Chat:    evt.Info.Chat,
 		Sender:  sender,
 		IsGroup: isGroup,
 		IsOwner: isOwner,
-		Cmd:     cmd,
-		Args:    fields[1:],
 		RawText: text,
-	}
-
-	if err := h(ctx, env); err != nil {
-		env.Log.Error().Err(err).Msg("command failed")
 	}
 }
 
-func extractText(evt *events.Message) string {
+// ExtractText returns the human-readable text of a message, from any of the common wrappers.
+func ExtractText(evt *events.Message) string {
 	m := evt.Message
 	if m == nil {
 		return ""
