@@ -102,6 +102,7 @@ func main() {
 	r.Register("todo", "todo add/list/done/del", commands.Todo())
 	r.Register("skill", "run a skill from ./skills/", commands.Skill())
 	r.Register("skills", "list available skills", commands.Skills())
+	r.Register("expense", "shared expense tracker (see !expense help)", commands.Expense(), "exp")
 	// System
 	r.Register("status", "owner: RAM / disk / uptime snapshot", commands.Status(start), "sysinfo")
 	r.Register("sh", "owner: run a bash command", commands.Sh())

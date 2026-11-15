@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+# desc: shared expense tracker — add/pay/total/split/list/clear, per-chat
+"""
+Per-chat shared expense tracker.
+
+Called via !expense (preferred) or !skill expense.
+State lives in session/state/expense.db, a sqlite DB separate from the Go store.
+
+Semantics:
+  Shared expense  — "add samad 100"
+      samad paid 100 into the shared pool. Everyone owes their share.
+  Direct payment  — "pay samad 100 sirajju"  or sugar "samad 100 (sirajju)"
+      samad gave 100 straight to sirajju. Not a shared expense, just moves
+      balance between two people (like a settlement).
+
+Balance math:
+  For each person P:
+      net(P) = paid_into_pool(P)
+             - total_pool / split_N
+             + received_direct(P)
+             - given_direct(P)
+
+  net > 0 → the group owes P; net < 0 → P owes the group.
+"""
+from __future__ import annotations
+import os
+import re
+import sqlite3
+import sys
+import textwrap
+from pathlib import Path
+
+CHAT = os.environ.get("WABOT_CHAT", "default")
+
+# Store the DB next to the Go state.db, but as its own file.
+PROJECT_DIR = Path(os.environ.get(
+    "WABOT_PROJECT_DIR",
+    Path(__file__).resolve().parent.parent,
+))
+DB_PATH = PROJECT_DIR / "session" / "state" / "expense.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+conn = sqlite3.connect(DB_PATH)
+conn.execute("PRAGMA busy_timeout = 5000")
+conn.executescript("""
+CREATE TABLE IF NOT EXISTS expense_group (
+  chat_jid   TEXT PRIMARY KEY,
+  split_n    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS expense (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_jid   TEXT NOT NULL,
+  payer      TEXT NOT NULL,
+  amount     REAL NOT NULL,
+  recipient  TEXT,
+  note       TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS expense_chat ON expense(chat_jid, created_at);
+""")
+
+
+# ---------- helpers ----------
+
+NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.-]*$")
+
+
+def normalize_name(s: str) -> str:
+    return s.strip().lower()
+
+
+def parse_amount(s: str):
+    try:
+        return float(s.replace(",", "").replace("_", ""))
+    except ValueError:
+        return None
+
+
+def strip_parens(s: str) -> str:
+    if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        return s[1:-1]
+    return s
+
+
+def get_split_n() -> int:
+    row = conn.execute(
+        "SELECT split_n FROM expense_group WHERE chat_jid=?", (CHAT,)
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def set_split_n(n: int):
+    conn.execute(
+        "INSERT INTO expense_group(chat_jid, split_n) VALUES(?,?) "
+        "ON CONFLICT(chat_jid) DO UPDATE SET split_n=excluded.split_n",
+        (CHAT, n),
+    )
+    conn.commit()
+
+
+def participants():
+    rows = conn.execute(
+        """
+        SELECT payer FROM expense WHERE chat_jid=?
+        UNION
+        SELECT recipient FROM expense WHERE chat_jid=? AND recipient IS NOT NULL
+        """,
+        (CHAT, CHAT),
+    ).fetchall()
+    return sorted({r[0] for r in rows if r[0]})
+
+
+def effective_n() -> int:
+    n = get_split_n()
+    if n > 0:
+        return n
+    return max(len(participants()), 1)
+
+
+def record(payer, amount, recipient=None, note=None):
+    conn.execute(
+        "INSERT INTO expense(chat_jid, payer, amount, recipient, note) VALUES(?,?,?,?,?)",
+        (CHAT, payer, float(amount), recipient, note),
+    )
+    conn.commit()
+
+
+def fmt_amt(x: float) -> str:
+    # Trim trailing .00 but keep up to 2 decimals.
+    s = f"{x:.2f}"
+    if s.endswith(".00"):
+        return s[:-3]
+    return s
+
+
+# ---------- subcommands ----------
+
+def usage() -> str:
+    return textwrap.dedent("""\
+        💰 *Expense tracker*
+
+        *add* <payer> <amount> [note]        shared expense, split among group
+        *pay* <payer> <amount> <recipient>   direct payment between two people
+        *total*                               per-person net balance
+        *split* <N>                           set group size (0 = auto by participants)
+        *list* [N]                            last N entries (default 10)
+        *del* <id>                            delete entry by id
+        *clear*                               wipe this chat's expenses
+        *who*                                 list participants
+
+        Shortcuts (no subcommand):
+          `<payer> <amount>`                  same as `add`
+          `<payer> <amount> (<recipient>)`    same as `pay`
+          `<payer> <amount> note words…`      add with a note""")
+
+
+def cmd_add(args):
+    if len(args) < 2:
+        return "usage: add <payer> <amount> [note]"
+    payer = normalize_name(args[0])
+    if not NAME_RE.match(payer):
+        return f"bad name: {args[0]}"
+    amount = parse_amount(args[1])
+    if amount is None or amount <= 0:
+        return f"bad amount: {args[1]}"
+    note = " ".join(args[2:]).strip() or None
+    record(payer, amount, None, note)
+    tail = f" ({note})" if note else ""
+    return f"✅ added — {payer} paid {fmt_amt(amount)}{tail}"
+
+
+def cmd_pay(args):
+    if len(args) < 3:
+        return "usage: pay <payer> <amount> <recipient>"
+    payer = normalize_name(args[0])
+    amount = parse_amount(args[1])
+    recipient = normalize_name(strip_parens(args[2]))
+    if not NAME_RE.match(payer):
+        return f"bad name: {args[0]}"
+    if amount is None or amount <= 0:
+        return f"bad amount: {args[1]}"
+    if not NAME_RE.match(recipient):
+        return f"bad recipient: {args[2]}"
+    if payer == recipient:
+        return "payer and recipient are the same person"
+    record(payer, amount, recipient, None)
+    return f"✅ {payer} → {recipient}: {fmt_amt(amount)}"
+
+
+def cmd_split(args):
+    if not args:
+        n = get_split_n()
+        p = len(participants())
+        return (
+            f"split: {'auto' if n == 0 else n}  "
+            f"(participants seen: {p}, effective split: {effective_n()})"
+        )
+    try:
+        n = int(args[0])
+    except ValueError:
+        return "usage: split <N>  (0 = auto by participant count)"
+    if n < 0:
+        return "N must be ≥ 0"
+    set_split_n(n)
+    label = "auto" if n == 0 else str(n)
+    return f"✅ split set to {label}"
+
+
+def cmd_total(_args=None):
+    rows = conn.execute(
+        "SELECT payer, amount, recipient FROM expense WHERE chat_jid=?",
+        (CHAT,),
+    ).fetchall()
+    if not rows:
+        return "no expenses yet. Try: add <payer> <amount>"
+
+    n = effective_n()
+    paid, given, received = {}, {}, {}
+    shared_total = 0.0
+    for payer, amount, recipient in rows:
+        if recipient:
+            given[payer] = given.get(payer, 0.0) + amount
+            received[recipient] = received.get(recipient, 0.0) + amount
+        else:
+            paid[payer] = paid.get(payer, 0.0) + amount
+            shared_total += amount
+
+    names = sorted(set(paid) | set(given) | set(received) | set(participants()))
+    share = shared_total / n if n else 0.0
+
+    lines = [
+        "💰 *Expense balances*",
+        f"shared pool: {fmt_amt(shared_total)}   split by: {n}   "
+        f"per-person share: {fmt_amt(share)}",
+        "",
+    ]
+    for name in names:
+        p = paid.get(name, 0.0)
+        g = given.get(name, 0.0)
+        r = received.get(name, 0.0)
+        net = p - share + r - g
+        if net > 0.005:
+            tag = "📈 is owed"
+        elif net < -0.005:
+            tag = "📉 owes   "
+        else:
+            tag = "✅ settled"
+        lines.append(
+            f"{tag}  *{name}*  → net {net:+.2f}   "
+            f"(paid {fmt_amt(p)}, share {fmt_amt(share)}"
+            + (f", in {fmt_amt(r)}" if r else "")
+            + (f", out {fmt_amt(g)}" if g else "")
+            + ")"
+        )
+    return "\n".join(lines)
+
+
+def cmd_list(args):
+    n = 10
+    if args:
+        try:
+            n = max(1, min(50, int(args[0])))
+        except ValueError:
+            pass
+    rows = conn.execute(
+        "SELECT id, payer, amount, recipient, note "
+        "FROM expense WHERE chat_jid=? ORDER BY created_at DESC LIMIT ?",
+        (CHAT, n),
+    ).fetchall()
+    if not rows:
+        return "no expenses yet."
+    out = [f"last {len(rows)}:"]
+    for id_, payer, amount, recipient, note in rows:
+        line = f"  #{id_}  {payer} {fmt_amt(amount)}"
+        if recipient:
+            line += f" → {recipient}"
+        if note:
+            line += f"  _{note}_"
+        out.append(line)
+    return "\n".join(out)
+
+
+def cmd_del(args):
+    if not args:
+        return "usage: del <id>"
+    try:
+        id_ = int(args[0])
+    except ValueError:
+        return f"bad id: {args[0]}"
+    cur = conn.execute(
+        "DELETE FROM expense WHERE id=? AND chat_jid=?", (id_, CHAT)
+    )
+    conn.commit()
+    return f"deleted #{id_}" if cur.rowcount else f"no entry #{id_}"
+
+
+def cmd_clear(_args):
+    cur = conn.execute("DELETE FROM expense WHERE chat_jid=?", (CHAT,))
+    conn.execute("DELETE FROM expense_group WHERE chat_jid=?", (CHAT,))
+    conn.commit()
+    return f"wiped {cur.rowcount} entries for this chat"
+
+
+def cmd_who(_args=None):
+    ps = participants()
+    return "participants: " + (", ".join(ps) if ps else "(none)")
+
+
+ROUTES = {
+    "add": cmd_add,
+    "pay": cmd_pay,
+    "split": cmd_split,
+    "total": cmd_total,
+    "sum": cmd_total,
+    "balance": cmd_total,
+    "list": cmd_list,
+    "ls": cmd_list,
+    "del": cmd_del,
+    "rm": cmd_del,
+    "clear": cmd_clear,
+    "reset": cmd_clear,
+    "who": cmd_who,
+    "members": cmd_who,
+    "help": lambda _: usage(),
+    "?": lambda _: usage(),
+}
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(usage())
+        return
+
+    # Natural-language shortcut:
+    #   "<payer> <amount>"              → add
+    #   "<payer> <amount> (<recipient>)" → pay
+    #   "<payer> <amount> words…"       → add with note
+    if (
+        len(args) >= 2
+        and args[0].lower() not in ROUTES
+        and parse_amount(args[1]) is not None
+    ):
+        if (
+            len(args) >= 3
+            and args[2].startswith("(")
+            and args[2].endswith(")")
+            and NAME_RE.match(strip_parens(args[2]))
+        ):
+            print(cmd_pay([args[0], args[1], args[2]]))
+        else:
+            print(cmd_add(args))
+        return
+
+    cmd = args[0].lower()
+    fn = ROUTES.get(cmd)
+    if not fn:
+        print(f"unknown subcommand: *{cmd}*\n\n{usage()}")
+        return
+    print(fn(args[1:]))
+
+
+if __name__ == "__main__":
+    main()
