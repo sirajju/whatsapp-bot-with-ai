@@ -223,11 +223,17 @@ func Lyrics() router.Handler {
 
 // ---------- helpers ----------
 
+// userAgent identifies wabot to upstream services. Wikipedia and a few other
+// public APIs 403 clients that don't set a specific UA.
+const userAgent = "wabot/1.0 (+https://github.com/sirajju/whatsapp-bot-with-ai)"
+
 func httpGet(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json, */*")
 	resp, err := httpCli.Do(req)
 	if err != nil {
 		return nil, err

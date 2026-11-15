@@ -116,10 +116,12 @@ func main() {
 	r.Register("unblock", "owner: unblock a user", commands.Unblock())
 	r.Register("restart", "owner: exit (expects supervisor to respawn)", commands.Restart())
 	// Voice
-	r.Register("tts", "text to speech (voice note)", commands.TTS())
-	r.Register("voice", "speak with a cloned ElevenLabs voice", commands.Voice())
-	r.Register("clonevoice", "owner: clone voice from quoted voice note", commands.CloneVoice())
+	r.Register("tts", "text → voice note", commands.TTS())
+	r.Register("voice", "speak text with a cloned voice", commands.Voice())
+	r.Register("clonevoice", "owner: clone a voice from quoted voice note", commands.CloneVoice())
 	r.Register("voices", "list cloned voices", commands.Voices())
+	r.Register("stt", "reply to a voice note → transcribe (Groq Whisper)", commands.STT(), "transcribe")
+	r.Register("sts", "reply to a voice note → re-voice as <name> (ElevenLabs)", commands.STS())
 	// Extras
 	r.Register("wiki", "Wikipedia summary", commands.Wiki())
 	r.Register("define", "dictionary lookup", commands.Define(), "def")
