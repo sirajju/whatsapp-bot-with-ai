@@ -13,14 +13,35 @@ type Gemini struct {
 
 func (g *Gemini) Name() string { return "gemini" }
 
-func (g *Gemini) Chat(ctx context.Context, prompt string) (string, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		g.Model, g.Key)
-	body := map[string]any{
-		"contents": []map[string]any{
-			{"parts": []map[string]any{{"text": prompt}}},
-		},
+func (g *Gemini) Chat(ctx context.Context, system string, history []Msg, prompt string) (string, error) {
+	contents := make([]map[string]any, 0, len(history)+1)
+	for _, m := range history {
+		role := m.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		if role == "system" {
+			continue
+		}
+		contents = append(contents, map[string]any{
+			"role":  role,
+			"parts": []map[string]any{{"text": m.Content}},
+		})
 	}
+	contents = append(contents, map[string]any{
+		"role":  "user",
+		"parts": []map[string]any{{"text": prompt}},
+	})
+
+	body := map[string]any{"contents": contents}
+	if system != "" {
+		body["system_instruction"] = map[string]any{
+			"parts": []map[string]any{{"text": system}},
+		}
+	}
+	url := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		g.Model, g.Key)
 	out, err := postJSON(ctx, url, nil, body)
 	if err != nil {
 		return "", err

@@ -13,13 +13,24 @@ type Anthropic struct {
 
 func (a *Anthropic) Name() string { return "anthropic" }
 
-func (a *Anthropic) Chat(ctx context.Context, prompt string) (string, error) {
+func (a *Anthropic) Chat(ctx context.Context, system string, history []Msg, prompt string) (string, error) {
+	msgs := make([]map[string]string, 0, len(history)+1)
+	for _, m := range history {
+		role := m.Role
+		if role == "system" {
+			continue
+		}
+		msgs = append(msgs, map[string]string{"role": role, "content": m.Content})
+	}
+	msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
+
 	body := map[string]any{
 		"model":      a.Model,
 		"max_tokens": 1024,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
+		"messages":   msgs,
+	}
+	if system != "" {
+		body["system"] = system
 	}
 	out, err := postJSON(ctx, "https://api.anthropic.com/v1/messages",
 		map[string]string{

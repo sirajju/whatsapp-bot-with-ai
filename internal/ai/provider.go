@@ -4,13 +4,20 @@ package ai
 
 import "context"
 
+// Msg is one history turn passed to a provider.
+type Msg struct {
+	Role    string // "user" | "assistant" | "system"
+	Content string
+}
+
 // Provider is the common surface for an LLM backend.
 type Provider interface {
 	Name() string
-	Chat(ctx context.Context, prompt string) (string, error)
+	// Chat sends system + prior history + the new user prompt, returns the reply.
+	Chat(ctx context.Context, system string, history []Msg, prompt string) (string, error)
 }
 
-// Config mirrors the subset of env the ai package needs, so we don't drag in the config pkg.
+// Config mirrors the subset of env the ai package needs.
 type Config struct {
 	OllamaURL    string
 	OllamaModel  string
@@ -25,7 +32,7 @@ type Config struct {
 }
 
 // Pick returns the highest-priority configured provider, or nil if none.
-// Order: Ollama (local, free) > Groq (free tier) > Anthropic > OpenAI > Gemini.
+// Order: Ollama (local) > Groq (free) > Anthropic > OpenAI > Gemini.
 func Pick(c Config) Provider {
 	if c.OllamaURL != "" {
 		return &Ollama{URL: c.OllamaURL, Model: c.OllamaModel}

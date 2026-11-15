@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Groq exposes an OpenAI-compatible chat endpoint. Free tier is generous.
+// Groq is OpenAI-compatible with a generous free tier.
 type Groq struct {
 	Key   string
 	Model string
@@ -14,15 +14,19 @@ type Groq struct {
 
 func (g *Groq) Name() string { return "groq" }
 
-func (g *Groq) Chat(ctx context.Context, prompt string) (string, error) {
-	body := map[string]any{
-		"model": g.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
+func (g *Groq) Chat(ctx context.Context, system string, history []Msg, prompt string) (string, error) {
+	msgs := make([]map[string]string, 0, len(history)+2)
+	if system != "" {
+		msgs = append(msgs, map[string]string{"role": "system", "content": system})
 	}
+	for _, m := range history {
+		msgs = append(msgs, map[string]string{"role": m.Role, "content": m.Content})
+	}
+	msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
+
 	out, err := postJSON(ctx, "https://api.groq.com/openai/v1/chat/completions",
-		map[string]string{"Authorization": "Bearer " + g.Key}, body)
+		map[string]string{"Authorization": "Bearer " + g.Key},
+		map[string]any{"model": g.Model, "messages": msgs})
 	if err != nil {
 		return "", err
 	}
