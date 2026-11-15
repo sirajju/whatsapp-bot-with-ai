@@ -46,6 +46,7 @@ type Router struct {
 	aliases  map[string]string
 	help     map[string]string
 	hooks    []Hook
+	fallback Handler // runs when a non-command, non-swallowed message arrives (e.g. AI session mode)
 }
 
 func New(cli *whatsmeow.Client, cfg *config.Config, st *store.Store, log zerolog.Logger) *Router {
@@ -71,6 +72,10 @@ func (r *Router) Register(name, help string, h Handler, aliases ...string) {
 
 func (r *Router) AddHook(h Hook) { r.hooks = append(r.hooks, h) }
 
+// SetFallback registers a handler to run on any message that is not a command and
+// was not swallowed by a hook. Used by AI session mode so bare messages go to the LLM.
+func (r *Router) SetFallback(h Handler) { r.fallback = h }
+
 func (r *Router) Help() map[string]string { return r.help }
 
 // Dispatch parses a message event and calls the matching handler, if any.
@@ -89,6 +94,11 @@ func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
 	}
 
 	if !strings.HasPrefix(text, r.cfg.Prefix) {
+		if r.fallback != nil {
+			if err := r.fallback(ctx, env); err != nil {
+				env.Log.Debug().Err(err).Msg("fallback")
+			}
+		}
 		return
 	}
 	fields := strings.Fields(strings.TrimPrefix(text, r.cfg.Prefix))

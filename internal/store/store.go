@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS personas (
   chat_jid TEXT PRIMARY KEY,
   name     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ai_mode (
+  chat_jid TEXT PRIMARY KEY,
+  active   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS voices (
+  name     TEXT PRIMARY KEY,
+  voice_id TEXT NOT NULL
+);
 `
 
 // Open opens (or creates) the sqlite file at dir/state.db and applies the schema.
@@ -225,4 +235,60 @@ func (s *Store) GetPersona(ctx context.Context, chatJID string) string {
 	var name string
 	_ = s.db.QueryRowContext(ctx, `SELECT name FROM personas WHERE chat_jid=?`, chatJID).Scan(&name)
 	return name
+}
+
+// ---------- AI session mode ----------
+
+func (s *Store) SetAIMode(ctx context.Context, chatJID string, on bool) error {
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO ai_mode(chat_jid, active) VALUES(?,?)
+ON CONFLICT(chat_jid) DO UPDATE SET active=excluded.active`, chatJID, v)
+	return err
+}
+
+func (s *Store) IsAIMode(ctx context.Context, chatJID string) bool {
+	var v int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT active FROM ai_mode WHERE chat_jid=?`, chatJID).Scan(&v)
+	return v == 1
+}
+
+// ---------- Voices ----------
+
+func (s *Store) SetVoice(ctx context.Context, name, voiceID string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO voices(name, voice_id) VALUES(?,?)
+ON CONFLICT(name) DO UPDATE SET voice_id=excluded.voice_id`, name, voiceID)
+	return err
+}
+
+func (s *Store) GetVoice(ctx context.Context, name string) (string, bool) {
+	var v string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT voice_id FROM voices WHERE name=?`, name).Scan(&v)
+	if err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+func (s *Store) ListVoices(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM voices ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }

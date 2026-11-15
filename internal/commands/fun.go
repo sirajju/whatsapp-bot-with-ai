@@ -76,18 +76,23 @@ func Calc() router.Handler {
 }
 
 // Translate uses MyMemory's free public translation API (no key, 5000 words/day).
-// Lingva's public mirrors became unreliable in 2024-25; MyMemory is far more stable.
+// Accepts either /tr <target> <text>           — assumes English source
+//       or     /tr <src>-<target> <text>       — explicit, e.g. /tr ja-en こんにちは
 func Translate() router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
 		if len(env.Args) < 2 {
 			return sendText(ctx, env.Cli, env.Chat,
-				"usage: "+env.Cfg.Prefix+"tr <target-lang-code> <text>   e.g. "+env.Cfg.Prefix+"tr es hello")
+				"usage: "+env.Cfg.Prefix+"tr <target> <text>   or   "+env.Cfg.Prefix+"tr <src>-<target> <text>")
 		}
-		target := strings.ToLower(env.Args[0])
+		src, target := "en", strings.ToLower(env.Args[0])
+		if i := strings.Index(target, "-"); i > 0 {
+			src, target = target[:i], target[i+1:]
+		}
 		text := strings.Join(env.Args[1:], " ")
+
 		u := fmt.Sprintf(
-			"https://api.mymemory.translated.net/get?q=%s&langpair=auto|%s",
-			url.QueryEscape(text), url.QueryEscape(target))
+			"https://api.mymemory.translated.net/get?q=%s&langpair=%s|%s",
+			url.QueryEscape(text), url.QueryEscape(src), url.QueryEscape(target))
 		b, err := httpGet(ctx, u)
 		if err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "translate: "+err.Error())
@@ -96,12 +101,18 @@ func Translate() router.Handler {
 			ResponseData struct {
 				TranslatedText string `json:"translatedText"`
 			} `json:"responseData"`
-			ResponseStatus int `json:"responseStatus"`
+			ResponseStatus    int    `json:"responseStatus"`
+			ResponseDetails   string `json:"responseDetails"`
 		}
-		if err := json.Unmarshal(b, &r); err != nil ||
-			r.ResponseData.TranslatedText == "" ||
-			r.ResponseStatus != 200 {
-			return sendText(ctx, env.Cli, env.Chat, "translate: empty response (lang code wrong?)")
+		if err := json.Unmarshal(b, &r); err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "translate parse: "+err.Error())
+		}
+		if r.ResponseStatus != 200 || r.ResponseData.TranslatedText == "" {
+			msg := r.ResponseDetails
+			if msg == "" {
+				msg = "empty (check lang codes)"
+			}
+			return sendText(ctx, env.Cli, env.Chat, "translate: "+msg)
 		}
 		return sendText(ctx, env.Cli, env.Chat, r.ResponseData.TranslatedText)
 	}

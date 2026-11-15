@@ -31,6 +31,8 @@ func Download() router.Handler {
 			return sendText(ctx, env.Cli, env.Chat, "pass a full http(s) URL")
 		}
 
+		_ = sendText(ctx, env.Cli, env.Chat, "⏳ downloading…")
+
 		tmp, err := os.MkdirTemp("", "wabot-dl-*")
 		if err != nil {
 			return err
