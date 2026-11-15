@@ -78,6 +78,9 @@ func main() {
 	}
 
 	// Passive hooks run before command dispatch, in order.
+	// Welcome fires first so a brand-new DM gets greeted AND auto-enabled for AI
+	// before any other hook or handler sees the message.
+	r.AddHook(commands.WelcomeHook())
 	r.AddHook(commands.BlocklistHook())
 	r.AddHook(commands.AntilinkHook())
 	// Fallback: in AI session mode, bare messages go to the LLM.
@@ -131,6 +134,7 @@ func main() {
 	r.Register("lyrics", "fetch song lyrics", commands.Lyrics())
 	// Admin
 	r.Register("broadcast", "owner: send to every joined group", commands.Broadcast())
+	r.Register("send", "owner: !send <phone> <text> — DM someone from the bot", commands.Send())
 	r.Register("block", "owner: block a user from the bot", commands.Block())
 	r.Register("unblock", "owner: unblock a user", commands.Unblock())
 	r.Register("restart", "owner: exit (expects supervisor to respawn)", commands.Restart())

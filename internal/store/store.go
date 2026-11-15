@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS ai_mode (
   active   INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS seen_chats (
+  chat_jid   TEXT PRIMARY KEY,
+  first_seen INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS voices (
   name     TEXT PRIMARY KEY,
   voice_id TEXT NOT NULL
@@ -281,6 +286,20 @@ func (s *Store) IsAIMode(ctx context.Context, chatJID string) bool {
 	_ = s.db.QueryRowContext(ctx,
 		`SELECT active FROM ai_mode WHERE chat_jid=?`, chatJID).Scan(&v)
 	return v == 1
+}
+
+// MarkSeenIfNew inserts chat_jid into seen_chats if it's not already there.
+// Returns true the first time a given chat is marked; false on subsequent calls.
+// Used by WelcomeHook to detect first-ever message from a chat.
+func (s *Store) MarkSeenIfNew(ctx context.Context, chatJID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO seen_chats(chat_jid, first_seen) VALUES(?, ?)`,
+		chatJID, time.Now().Unix())
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ---------- Voices ----------

@@ -99,8 +99,31 @@ func SetPersona() router.Handler {
 	}
 }
 
+// WelcomeHook fires before dispatch on every message. On the first-ever DM from
+// a chat it greets the user and turns AI mode on by default. Does not swallow
+// the message, so the user's first words still reach the normal command/fallback
+// path. Group chats are skipped — auto-enabling AI in a shared group would spam.
+func WelcomeHook() router.Hook {
+	return func(ctx context.Context, env *router.Env) bool {
+		if env.IsGroup {
+			return false
+		}
+		isNew, err := env.Store.MarkSeenIfNew(ctx, env.Chat.String())
+		if err != nil || !isNew {
+			return false
+		}
+		_ = env.Store.SetAIMode(ctx, env.Chat.String(), true)
+		_ = sendText(ctx, env.Cli, env.Chat,
+			"👋 Hi! *AI mode is ON* by default — just send any message.\n"+
+				"Turn it off with *"+env.Cfg.Prefix+"endai*. See all commands with *"+env.Cfg.Prefix+"menu*.")
+		return false
+	}
+}
+
 // runAI is the shared path. When the provider supports tool calling AND the registry
 // is non-nil, it runs a tool loop. Otherwise it falls back to a plain Chat() call.
+// On any provider error, AI mode is disabled for this chat so the user isn't
+// stuck in a broken loop — they can re-enable with /ai.
 func runAI(ctx context.Context, env *router.Env, provider ai.Provider, reg *aitools.Registry, prompt string) error {
 	_ = sendText(ctx, env.Cli, env.Chat, "🤔 thinking…")
 
@@ -108,7 +131,6 @@ func runAI(ctx context.Context, env *router.Env, provider ai.Provider, reg *aito
 	persona := env.Store.GetPersona(ctx, chatJID)
 	system := ai.SystemPrompt(persona)
 
-	// Prior history for context
 	hist, _ := env.Store.History(ctx, chatJID, historyWindow)
 	storeHistory := make([]ai.Msg, 0, len(hist))
 	for _, h := range hist {
@@ -126,11 +148,14 @@ func runAI(ctx context.Context, env *router.Env, provider ai.Provider, reg *aito
 		reply, err = provider.Chat(ctx, system, storeHistory, prompt)
 	}
 	if err != nil {
-		return sendText(ctx, env.Cli, env.Chat, "AI error: "+err.Error())
+		_ = env.Store.SetAIMode(ctx, chatJID, false)
+		return sendText(ctx, env.Cli, env.Chat,
+			"⚠️ AI error: "+err.Error()+"\nAI mode turned off. Send *"+env.Cfg.Prefix+"ai* to re-enable.")
 	}
 	if reply == "" {
 		reply = "(empty response)"
 	}
+	reply = ai.FormatForWhatsApp(reply)
 
 	_ = env.Store.AppendHistory(ctx, chatJID, "user", prompt)
 	_ = env.Store.AppendHistory(ctx, chatJID, "assistant", reply)
@@ -141,7 +166,6 @@ func runAI(ctx context.Context, env *router.Env, provider ai.Provider, reg *aito
 func runAIToolLoop(ctx context.Context, env *router.Env, provider ai.TooledProvider,
 	reg *aitools.Registry, system string, history []ai.Msg, prompt string) (string, error) {
 
-	// Build the initial message array.
 	msgs := make([]ai.RawMsg, 0, len(history)+4)
 	if system != "" {
 		msgs = append(msgs, ai.RawMsg{Role: "system", Content: system})

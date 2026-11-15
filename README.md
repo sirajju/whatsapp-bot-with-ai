@@ -36,34 +36,44 @@ cd whatsapp-bot-with-ai
 cp .env.example .env
 # edit .env: set PAIR_PHONE and OWNERS
 
-make build-linux
-./bin/wabot-linux-amd64                 # first run prints a pairing code
+make install              # builds, installs the user systemd unit + `wabot` CLI, starts the service
 ```
 
-In WhatsApp on your phone: **Settings → Linked devices → Link with phone
-number** and enter the code shown in the terminal.
+On first run, link the device: **Settings → Linked devices → Link with phone
+number** in WhatsApp, then enter the pairing code shown in `wabot logs -f`.
 
-### systemd unit (for `!restart` to actually come back)
+### The `wabot` CLI
 
-```ini
-# /etc/systemd/system/wabot.service
-[Unit]
-Description=wabot
-After=network-online.target
+The installer puts a management wrapper on your PATH:
 
-[Service]
-User=sirajju
-WorkingDirectory=/home/sirajju/whatsapp-bot-with-ai
-ExecStart=/home/sirajju/whatsapp-bot-with-ai/bin/wabot
-Restart=on-failure
-RestartSec=5
-EnvironmentFile=/home/sirajju/whatsapp-bot-with-ai/.env
-
-[Install]
-WantedBy=multi-user.target
+```
+wabot status             service status
+wabot start | stop | restart
+wabot logs [-f] [-n N]   tail application log
+wabot journal [-f]       tail systemd journal
+wabot build              rebuild the binary
+wabot deploy             build + restart
+wabot run                foreground run (stops service first — debug)
+wabot ps                 pid, cpu/mem, open sockets
+wabot env                show .env keys (not values)
+wabot path               show project paths
 ```
 
-## Commands (26)
+### Manual systemd setup (if you skip `make install`)
+
+The installer writes a **user** systemd unit to `~/.config/systemd/user/wabot.service`
+rendered from `scripts/wabot.service`. If you want to roll your own, copy that
+template and replace `{{PROJECT_DIR}}` with your clone path.
+
+```bash
+mkdir -p ~/.config/systemd/user
+sed "s|{{PROJECT_DIR}}|$PWD|g" scripts/wabot.service > ~/.config/systemd/user/wabot.service
+systemctl --user daemon-reload
+systemctl --user enable --now wabot.service
+sudo loginctl enable-linger $USER   # survive logout
+```
+
+## Commands
 
 ### Core
 
@@ -76,16 +86,29 @@ WantedBy=multi-user.target
 
 | cmd                 | what it does                                          |
 |---------------------|-------------------------------------------------------|
-| `!ai <prompt>`      | ask the configured LLM (remembers last 10 turns)      |
+| `!ai`               | turn on AI session mode (every message goes to the LLM) |
+| `!ai <prompt>`      | single-turn ask (remembers last 10 turns of history)  |
+| `!endai`            | leave AI session mode                                 |
 | `!clearai`          | wipe AI chat memory for this chat                     |
 | `!persona [name]`   | switch persona per chat (or show current + list)      |
+
+**Default behavior:** on the first message from a new DM the bot sends a short
+welcome and enables AI mode automatically — the user can `!endai` to turn it
+off. If the AI provider returns an error, AI mode auto-disables for that chat
+so the user isn't stuck in a broken loop.
+
+**WhatsApp-aware output:** the bot's system prompt tells every persona it's
+inside WhatsApp, and replies are post-processed so stray Markdown (`**bold**`,
+headings, `[link](url)`) and HTML entities (`&amp;`, `<br>`) become native
+WhatsApp syntax.
 
 Personas: `default`, `coder`, `teacher`, `stoic`, `pirate`, `shaka`, `gordon`,
 `therapist`, `detective`, `news`, `yoda`.
 
 AI backend priority (whichever env var is set first wins):
-`OLLAMA_URL` → `GROQ_API_KEY` → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `GEMINI_API_KEY`.
-Groq has a free tier; Ollama is 100% local.
+`OPENCODE_CMD` → `OLLAMA_URL` → `GROQ_API_KEY` → `NVIDIA_API_KEY` → `OPENROUTER_API_KEY` →
+`ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `GEMINI_API_KEY`. Set `AI_PREFERRED` to pin one
+explicitly. Groq has a generous free tier; Ollama is 100% local.
 
 ### Stickers
 
@@ -132,12 +155,15 @@ Groq has a free tier; Ollama is 100% local.
 
 ### Admin (owner-only)
 
-| cmd         | what it does                                             |
-|-------------|----------------------------------------------------------|
-| `!broadcast <msg>` | send to every joined group (0.5s spacing)         |
-| `!block`    | block a user from the bot                                |
-| `!unblock`  | unblock                                                  |
-| `!restart`  | exit (expects systemd / supervisor to respawn)           |
+| cmd                         | what it does                                     |
+|-----------------------------|--------------------------------------------------|
+| `!send <phone> <msg>`       | DM anyone from the bot number (phone in E.164 digits) |
+| `!broadcast <msg>`          | send to every joined group (0.5s spacing)        |
+| `!block`                    | block a user from the bot                        |
+| `!unblock`                  | unblock                                          |
+| `!restart`                  | exit (expects systemd / supervisor to respawn)   |
+| `!sh <cmd>`                 | run a bash command on the host                   |
+| `!status`                   | RAM / disk / uptime snapshot                     |
 
 ### Passive (always on)
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=wabot — WhatsApp bot (whatsmeow)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{PROJECT_DIR}}
+EnvironmentFile={{PROJECT_DIR}}/.env
+ExecStart={{PROJECT_DIR}}/bin/wabot
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:{{PROJECT_DIR}}/wabot.log
+StandardError=append:{{PROJECT_DIR}}/wabot.log
+
+[Install]
+WantedBy=default.target

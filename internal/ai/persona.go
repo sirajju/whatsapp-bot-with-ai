@@ -1,5 +1,29 @@
 package ai
 
+import "strings"
+
+// whatsappPreamble is prepended to every persona so the model knows it's
+// talking in WhatsApp and must avoid Markdown / HTML.
+const whatsappPreamble = `You are replying inside a WhatsApp chat.
+
+Formatting rules — use ONLY these:
+- Bold: single asterisks like *bold* (never **double**).
+- Italic: single underscores like _italic_.
+- Strikethrough: single tildes like ~strike~.
+- Code: triple backticks for blocks, single backticks for inline.
+
+Do NOT emit:
+- Markdown headings (# or ##).
+- Markdown tables.
+- HTML tags (<br>, <p>, <b>, <code>, …).
+- HTML entities — write & " ' < > as literal characters, never &amp; &quot; &apos; &lt; &gt;.
+- Markdown bullet markers "- " or "* " at line start — use "• " or plain newlines instead.
+- Markdown links like [text](url) — write "text (url)" instead.
+
+Keep answers short enough to read on a phone. Plain conversational text wins.
+
+`
+
 // Personas are small system-prompt flavors the user can pick per-chat.
 var Personas = map[string]string{
 	"default":   "You are a concise, friendly WhatsApp assistant. Keep answers short unless asked otherwise.",
@@ -16,10 +40,11 @@ var Personas = map[string]string{
 }
 
 func SystemPrompt(name string) string {
-	if p, ok := Personas[name]; ok {
-		return p
+	base, ok := Personas[name]
+	if !ok {
+		base = Personas["default"]
 	}
-	return Personas["default"]
+	return whatsappPreamble + strings.TrimSpace(base)
 }
 
 func PersonaNames() []string {

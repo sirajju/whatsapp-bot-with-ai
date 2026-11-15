@@ -2,7 +2,7 @@ BINARY := wabot
 BIN_DIR := bin
 GOFLAGS := -trimpath -ldflags="-s -w"
 
-.PHONY: build build-linux run tidy clean fmt vet
+.PHONY: build build-linux run tidy clean fmt vet install
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -15,6 +15,10 @@ build-linux:
 
 run:
 	go run ./cmd/wabot
+
+# One-shot installer: builds, installs user systemd unit + wabot CLI, starts.
+install:
+	./scripts/install.sh
 
 tidy:
 	go mod tidy

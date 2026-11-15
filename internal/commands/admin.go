@@ -18,7 +18,7 @@ func Broadcast() router.Handler {
 			return sendText(ctx, env.Cli, env.Chat, "owner only")
 		}
 		if len(env.Args) == 0 {
-			return sendText(ctx, env.Cli, env.Chat, "usage: !broadcast <message>")
+			return sendText(ctx, env.Cli, env.Chat, "usage: "+env.Cfg.Prefix+"broadcast <message>")
 		}
 		msg := strings.Join(env.Args, " ")
 
@@ -33,11 +33,47 @@ func Broadcast() router.Handler {
 			} else {
 				sent++
 			}
-			time.Sleep(500 * time.Millisecond) // avoid being flagged
+			time.Sleep(500 * time.Millisecond)
 		}
 		return sendText(ctx, env.Cli, env.Chat,
 			fmt.Sprintf("broadcast sent to %d groups (failed %d)", sent, failed))
 	}
+}
+
+// Send lets the owner message any phone from the bot number. Owner only.
+//
+//	!send <phone> <text>   phone digits with country code, no + or spaces
+func Send() router.Handler {
+	return func(ctx context.Context, env *router.Env) error {
+		if !env.IsOwner {
+			return sendText(ctx, env.Cli, env.Chat, "owner only")
+		}
+		if len(env.Args) < 2 {
+			return sendText(ctx, env.Cli, env.Chat,
+				"usage: "+env.Cfg.Prefix+"send <phone> <text>\n"+
+					"phone: digits only, country code included (e.g. 917593980565)")
+		}
+		phone := onlyDigits(env.Args[0])
+		if phone == "" {
+			return sendText(ctx, env.Cli, env.Chat, "bad phone: need digits (country code included, no +)")
+		}
+		target := types.NewJID(phone, types.DefaultUserServer)
+		text := strings.Join(env.Args[1:], " ")
+		if err := sendText(ctx, env.Cli, target, text); err != nil {
+			return sendText(ctx, env.Cli, env.Chat, "send failed: "+err.Error())
+		}
+		return sendText(ctx, env.Cli, env.Chat, "✅ sent to +"+target.User)
+	}
+}
+
+func onlyDigits(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Block adds a user to the bot's blocklist. They get no further command dispatch.
@@ -48,7 +84,7 @@ func Block() router.Handler {
 		}
 		target, ok := targetJID(env)
 		if !ok {
-			return sendText(ctx, env.Cli, env.Chat, "reply to a user or pass a phone with !block")
+			return sendText(ctx, env.Cli, env.Chat, "reply to a user or pass a phone with "+env.Cfg.Prefix+"block")
 		}
 		reason := "blocked by owner"
 		if len(env.Args) > 1 {
@@ -68,7 +104,7 @@ func Unblock() router.Handler {
 		}
 		target, ok := targetJID(env)
 		if !ok {
-			return sendText(ctx, env.Cli, env.Chat, "reply to a user or pass a phone with !unblock")
+			return sendText(ctx, env.Cli, env.Chat, "reply to a user or pass a phone with "+env.Cfg.Prefix+"unblock")
 		}
 		if err := env.Store.Unblock(ctx, target.String()); err != nil {
 			return sendText(ctx, env.Cli, env.Chat, "unblock: "+err.Error())
@@ -84,7 +120,6 @@ func Restart() router.Handler {
 			return sendText(ctx, env.Cli, env.Chat, "owner only")
 		}
 		_ = sendText(ctx, env.Cli, env.Chat, "restarting…")
-		// Delay slightly so the message actually flushes before we exit.
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			panicExit()
@@ -97,7 +132,6 @@ func Restart() router.Handler {
 var panicExit = func() { exitWithCode(0) }
 
 func exitWithCode(code int) {
-	// os.Exit without import cycles: call through a function ref main sets at startup.
 	if osExit != nil {
 		osExit(code)
 	}
