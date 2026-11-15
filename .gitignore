@@ -1,0 +1,18 @@
+.env
+bin/
+dist/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+session/
+store.db*
+tmp/
+*.log
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+coverage.txt
