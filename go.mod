@@ -1,6 +1,6 @@
 module github.com/sirajju/whatsapp-bot-with-ai
 
-go 1.23
+go 1.26.0
 
 require (
 	github.com/joho/godotenv v1.5.1
@@ -9,6 +9,7 @@ require (
 	go.mau.fi/whatsmeow v0.0.0-20261113220833-ecc39170bc14
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.62.0
+	rsc.io/qr v0.2.0
 )
 
 require (
@@ -36,5 +37,4 @@ require (
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	rsc.io/qr v0.2.0 // indirect
 )
