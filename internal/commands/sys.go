@@ -14,9 +14,12 @@ import (
 )
 
 // Status is the user-facing system info. Mirrors what aitools.get_system_info returns
-// but formatted for a chat message.
+// but formatted for a chat message. Owner-only.
 func Status(start time.Time) router.Handler {
 	return func(ctx context.Context, env *router.Env) error {
+		if !env.IsOwner {
+			return sendText(ctx, env.Cli, env.Chat, "owner only")
+		}
 		host := aitools.SystemInfoText()
 		var b strings.Builder
 		fmt.Fprintf(&b, "🖥 *wabot status*\n")
