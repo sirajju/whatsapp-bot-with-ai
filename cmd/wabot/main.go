@@ -14,6 +14,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/ai"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/aitools"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/auth"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/commands"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
@@ -69,17 +70,24 @@ func main() {
 		log.Info().Msg("no AI provider configured")
 	}
 
+	// AI tool registry
+	reg := aitools.NewRegistry()
+	reg.RegisterAll()
+	if _, canTool := provider.(ai.TooledProvider); canTool {
+		log.Info().Int("tools", len(reg.Specs())).Msg("AI function-calling enabled")
+	}
+
 	// Passive hooks run before command dispatch, in order.
 	r.AddHook(commands.BlocklistHook())
 	r.AddHook(commands.AntilinkHook())
 	// Fallback: in AI session mode, bare messages go to the LLM.
-	r.SetFallback(commands.AIFallback(provider))
+	r.SetFallback(commands.AIFallback(provider, reg))
 
 	start := time.Now()
 	// Core
 	r.Register("ping", "liveness check", commands.Ping(start))
 	// AI
-	r.Register("ai", "ask the LLM (no args = enter chat mode)", commands.AI(provider), "chat", "gpt")
+	r.Register("ai", "ask the LLM (no args = enter chat mode)", commands.AI(provider, reg), "chat", "gpt")
 	r.Register("endai", "leave AI chat mode", commands.EndAI())
 	r.Register("clearai", "wipe AI chat memory for this chat", commands.ClearAI())
 	r.Register("persona", "switch AI persona for this chat", commands.SetPersona())
@@ -91,6 +99,9 @@ func main() {
 	r.Register("todo", "todo add/list/done/del", commands.Todo())
 	r.Register("skill", "run a skill from ./skills/", commands.Skill())
 	r.Register("skills", "list available skills", commands.Skills())
+	// System
+	r.Register("status", "RAM / disk / uptime snapshot", commands.Status(start), "sysinfo")
+	r.Register("sh", "owner: run a bash command", commands.Sh())
 	// Stickers
 	r.Register("sticker", "reply to image/video → sticker", commands.Sticker(), "s")
 	r.Register("toimg", "reply to a sticker → jpeg image", commands.Toimg())

@@ -13,3 +13,8 @@ func (g *Groq) Name() string { return "groq" }
 func (g *Groq) Chat(ctx context.Context, system string, history []Msg, prompt string) (string, error) {
 	return chatOpenAICompat(ctx, "https://api.groq.com/openai/v1", g.Key, g.Model, system, history, prompt, nil)
 }
+
+// RawChat implements TooledProvider for function-calling-aware flows.
+func (g *Groq) RawChat(ctx context.Context, messages []RawMsg, tools []ToolSpec) (RawChatResponse, error) {
+	return rawChatOpenAICompat(ctx, "https://api.groq.com/openai/v1", g.Key, g.Model, messages, tools, nil)
+}
