@@ -86,6 +86,14 @@ func (r *Registry) RegisterAll() {
 	r.Register(fileCreateTool())
 	r.Register(fileReadTool())
 	r.Register(fileListTool())
+	// Expense tracker — one tool per operation, backed by skills/expense
+	r.Register(expenseAddTool())
+	r.Register(expensePayTool())
+	r.Register(expenseSetMembersTool())
+	r.Register(expenseSetSplitTool())
+	r.Register(expenseTotalTool())
+	r.Register(expenseListTool())
+	r.Register(expenseDelTool())
 }
 
 // -------- helpers for building a JSON Schema in Go --------

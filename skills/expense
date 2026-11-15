@@ -1,26 +1,49 @@
 #!/usr/bin/env python3
-# desc: shared expense tracker — add/pay/total/split/list/clear, per-chat
+# desc: shared expense tracker — expense items + optional payer, per-chat
 """
 Per-chat shared expense tracker.
 
 Called via !expense (preferred) or !skill expense.
 State lives in session/state/expense.db, a sqlite DB separate from the Go store.
 
-Semantics:
-  Shared expense  — "add samad 100"
-      samad paid 100 into the shared pool. Everyone owes their share.
-  Direct payment  — "pay samad 100 sirajju"  or sugar "samad 100 (sirajju)"
-      samad gave 100 straight to sirajju. Not a shared expense, just moves
-      balance between two people (like a settlement).
+Model (v2)
+----------
+Two separate rosters:
 
-Balance math:
-  For each person P:
-      net(P) = paid_into_pool(P)
-             - total_pool / split_N
-             + received_direct(P)
-             - given_direct(P)
+  Split participants (members)
+      Explicit list of people sharing costs. Set with `members`.
+      The per-person share is computed as pool_total / len(members),
+      or pool_total / split_N if you've set a fixed N via `split`.
 
-  net > 0 → the group owes P; net < 0 → P owes the group.
+  Expenses
+      Each expense is an item: a name (e.g. "veg", "pizza") and an amount.
+      Optionally a "paid_by" — one of the members who covered it. If paid_by
+      is empty, nobody's been credited for it yet.
+
+  Balance per member M:
+      net(M) = paid_by_total(M) - pool_total / N
+             + received_direct(M) - given_direct(M)
+
+      Positive → group owes M.  Negative → M owes the group.
+
+Syntax
+------
+  add  <name> <amount> [(payer)] [note…]     shared expense, optional payer
+  pay  <from> <amount> <to>                   direct settlement, 1-to-1
+  members <name> [name...]                    replace members list
+  members +<name>                             add a single member
+  members -<name>                             remove a single member
+  split <N>                                   set group size (0 = len(members))
+  total | sum | balance                       per-person net
+  list [N] | ls                               last N entries
+  del <id> | rm <id>                          remove an entry
+  clear | reset                               wipe this chat
+  who                                         members + participants seen
+
+Shortcuts (no subcommand):
+  "<name> <amount>"                           shared add, no payer
+  "<name> <amount> (<payer>)"                 shared add with payer
+  "<name> <amount> words…"                    shared add with a note
 """
 from __future__ import annotations
 import os
@@ -32,7 +55,6 @@ from pathlib import Path
 
 CHAT = os.environ.get("WABOT_CHAT", "default")
 
-# Store the DB next to the Go state.db, but as its own file.
 PROJECT_DIR = Path(os.environ.get(
     "WABOT_PROJECT_DIR",
     Path(__file__).resolve().parent.parent,
@@ -60,6 +82,36 @@ CREATE INDEX IF NOT EXISTS expense_chat ON expense(chat_jid, created_at);
 """)
 
 
+# ---------- schema migration v1 → v2 ----------
+
+def _cols(table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def migrate():
+    if "name" not in _cols("expense"):
+        # v1 had `payer` holding what we now call `name`. Rename it, then
+        # add the real `paid_by`. Promote single-word notes into paid_by
+        # since users were already using the note column that way.
+        conn.execute("ALTER TABLE expense RENAME COLUMN payer TO name")
+        conn.execute("ALTER TABLE expense ADD COLUMN paid_by TEXT")
+        conn.execute("""
+            UPDATE expense
+            SET paid_by = note, note = NULL
+            WHERE paid_by IS NULL
+              AND note IS NOT NULL
+              AND note NOT LIKE '% %'
+              AND LENGTH(note) < 32
+              AND note GLOB '[a-zA-Z_]*'
+        """)
+    if "members" not in _cols("expense_group"):
+        conn.execute("ALTER TABLE expense_group ADD COLUMN members TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+
+
+migrate()
+
+
 # ---------- helpers ----------
 
 NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.-]*$")
@@ -82,26 +134,52 @@ def strip_parens(s: str) -> str:
     return s
 
 
-def get_split_n() -> int:
-    row = conn.execute(
-        "SELECT split_n FROM expense_group WHERE chat_jid=?", (CHAT,)
+def _group_row():
+    return conn.execute(
+        "SELECT split_n, members FROM expense_group WHERE chat_jid=?", (CHAT,)
     ).fetchone()
+
+
+def get_split_n() -> int:
+    row = _group_row()
     return int(row[0]) if row else 0
+
+
+def get_members() -> list[str]:
+    row = _group_row()
+    if not row or not row[1]:
+        return []
+    return [m for m in row[1].split(",") if m]
 
 
 def set_split_n(n: int):
     conn.execute(
-        "INSERT INTO expense_group(chat_jid, split_n) VALUES(?,?) "
+        "INSERT INTO expense_group(chat_jid, split_n, members) VALUES(?,?,?) "
         "ON CONFLICT(chat_jid) DO UPDATE SET split_n=excluded.split_n",
-        (CHAT, n),
+        (CHAT, n, ""),
     )
     conn.commit()
 
 
-def participants():
+def set_members(members: list[str]):
+    members = sorted({normalize_name(m) for m in members if m.strip()})
+    for m in members:
+        if not NAME_RE.match(m):
+            raise ValueError(f"bad name: {m}")
+    csv = ",".join(members)
+    conn.execute(
+        "INSERT INTO expense_group(chat_jid, split_n, members) VALUES(?,?,?) "
+        "ON CONFLICT(chat_jid) DO UPDATE SET members=excluded.members",
+        (CHAT, 0, csv),
+    )
+    conn.commit()
+
+
+def seen_participants() -> list[str]:
+    """Names that have appeared as paid_by/recipient on any expense."""
     rows = conn.execute(
         """
-        SELECT payer FROM expense WHERE chat_jid=?
+        SELECT paid_by FROM expense WHERE chat_jid=? AND paid_by IS NOT NULL
         UNION
         SELECT recipient FROM expense WHERE chat_jid=? AND recipient IS NOT NULL
         """,
@@ -114,23 +192,24 @@ def effective_n() -> int:
     n = get_split_n()
     if n > 0:
         return n
-    return max(len(participants()), 1)
+    m = get_members()
+    if m:
+        return len(m)
+    return max(len(seen_participants()), 1)
 
 
-def record(payer, amount, recipient=None, note=None):
+def record(name, amount, paid_by=None, recipient=None, note=None):
     conn.execute(
-        "INSERT INTO expense(chat_jid, payer, amount, recipient, note) VALUES(?,?,?,?,?)",
-        (CHAT, payer, float(amount), recipient, note),
+        "INSERT INTO expense(chat_jid, name, amount, paid_by, recipient, note) "
+        "VALUES(?,?,?,?,?,?)",
+        (CHAT, name, float(amount), paid_by, recipient, note),
     )
     conn.commit()
 
 
 def fmt_amt(x: float) -> str:
-    # Trim trailing .00 but keep up to 2 decimals.
     s = f"{x:.2f}"
-    if s.endswith(".00"):
-        return s[:-3]
-    return s
+    return s[:-3] if s.endswith(".00") else s
 
 
 # ---------- subcommands ----------
@@ -139,102 +218,167 @@ def usage() -> str:
     return textwrap.dedent("""\
         💰 *Expense tracker*
 
-        *add* <payer> <amount> [note]        shared expense, split among group
-        *pay* <payer> <amount> <recipient>   direct payment between two people
-        *total*                               per-person net balance
-        *split* <N>                           set group size (0 = auto by participants)
-        *list* [N]                            last N entries (default 10)
-        *del* <id>                            delete entry by id
-        *clear*                               wipe this chat's expenses
-        *who*                                 list participants
+        *add* <name> <amount> [(payer)] [note]   shared expense
+        *pay* <from> <amount> <to>                direct settlement
+        *members* <name> [name...]                set participants
+        *members* +<name> | -<name>               add/remove one
+        *split* <N>                                fixed group size (0 = members count)
+        *total* | *sum* | *balance*                per-person net balance
+        *list* [N] | *ls*                          last N entries
+        *del* <id> | *rm* <id>                     remove entry
+        *clear* | *reset*                          wipe this chat
+        *who*                                       members + anyone seen
 
         Shortcuts (no subcommand):
-          `<payer> <amount>`                  same as `add`
-          `<payer> <amount> (<recipient>)`    same as `pay`
-          `<payer> <amount> note words…`      add with a note""")
+          `<name> <amount>`                        shared add, no payer yet
+          `<name> <amount> (<payer>)`              shared add, payer known
+          `<name> <amount> words…`                 shared add with a note""")
 
 
 def cmd_add(args):
     if len(args) < 2:
-        return "usage: add <payer> <amount> [note]"
-    payer = normalize_name(args[0])
-    if not NAME_RE.match(payer):
+        return "usage: add <name> <amount> [(payer)] [note]"
+    name = normalize_name(args[0])
+    if not NAME_RE.match(name):
         return f"bad name: {args[0]}"
     amount = parse_amount(args[1])
     if amount is None or amount <= 0:
         return f"bad amount: {args[1]}"
-    note = " ".join(args[2:]).strip() or None
-    record(payer, amount, None, note)
-    tail = f" ({note})" if note else ""
-    return f"✅ added — {payer} paid {fmt_amt(amount)}{tail}"
+
+    paid_by = None
+    rest = args[2:]
+    # Optional leading "(payer)"
+    if rest and rest[0].startswith("(") and rest[0].endswith(")"):
+        pb = normalize_name(strip_parens(rest[0]))
+        if not NAME_RE.match(pb):
+            return f"bad payer: {rest[0]}"
+        paid_by = pb
+        rest = rest[1:]
+    note = " ".join(rest).strip() or None
+
+    record(name, amount, paid_by=paid_by, note=note)
+    bits = [f"*{name}* {fmt_amt(amount)}"]
+    if paid_by:
+        bits.append(f"paid by *{paid_by}*")
+    if note:
+        bits.append(f"_{note}_")
+    return "✅ added — " + " · ".join(bits)
 
 
 def cmd_pay(args):
     if len(args) < 3:
-        return "usage: pay <payer> <amount> <recipient>"
-    payer = normalize_name(args[0])
+        return "usage: pay <from> <amount> <to>"
+    src = normalize_name(args[0])
     amount = parse_amount(args[1])
-    recipient = normalize_name(strip_parens(args[2]))
-    if not NAME_RE.match(payer):
+    dst = normalize_name(strip_parens(args[2]))
+    if not NAME_RE.match(src):
         return f"bad name: {args[0]}"
     if amount is None or amount <= 0:
         return f"bad amount: {args[1]}"
-    if not NAME_RE.match(recipient):
+    if not NAME_RE.match(dst):
         return f"bad recipient: {args[2]}"
-    if payer == recipient:
+    if src == dst:
         return "payer and recipient are the same person"
-    record(payer, amount, recipient, None)
-    return f"✅ {payer} → {recipient}: {fmt_amt(amount)}"
+    record("(settlement)", amount, paid_by=src, recipient=dst)
+    return f"✅ {src} → {dst}: {fmt_amt(amount)}"
+
+
+def cmd_members(args):
+    if not args:
+        m = get_members()
+        s = seen_participants()
+        extra = sorted(set(s) - set(m))
+        lines = [f"members ({len(m)}): " + (", ".join(m) if m else "(none set)")]
+        if extra:
+            lines.append(f"also seen in history: {', '.join(extra)}")
+        lines.append(f"effective split: {effective_n()}")
+        return "\n".join(lines)
+
+    # +foo / -foo edits
+    if args[0].startswith("+") or args[0].startswith("-"):
+        current = set(get_members())
+        for a in args:
+            if a.startswith("+"):
+                nm = normalize_name(a[1:])
+                if NAME_RE.match(nm):
+                    current.add(nm)
+            elif a.startswith("-"):
+                nm = normalize_name(a[1:])
+                current.discard(nm)
+        try:
+            set_members(sorted(current))
+        except ValueError as e:
+            return str(e)
+        return f"members: {', '.join(sorted(current)) or '(none)'}"
+
+    # full replacement
+    try:
+        set_members(args)
+    except ValueError as e:
+        return str(e)
+    m = get_members()
+    return f"members: {', '.join(m)}"
 
 
 def cmd_split(args):
     if not args:
         n = get_split_n()
-        p = len(participants())
+        m = get_members()
         return (
             f"split: {'auto' if n == 0 else n}  "
-            f"(participants seen: {p}, effective split: {effective_n()})"
+            f"(members: {len(m)}, effective: {effective_n()})"
         )
     try:
         n = int(args[0])
     except ValueError:
-        return "usage: split <N>  (0 = auto by participant count)"
+        return "usage: split <N>  (0 = auto by members)"
     if n < 0:
         return "N must be ≥ 0"
     set_split_n(n)
-    label = "auto" if n == 0 else str(n)
-    return f"✅ split set to {label}"
+    return f"✅ split set to {'auto' if n == 0 else n}"
 
 
 def cmd_total(_args=None):
     rows = conn.execute(
-        "SELECT payer, amount, recipient FROM expense WHERE chat_jid=?",
+        "SELECT name, amount, paid_by, recipient FROM expense WHERE chat_jid=?",
         (CHAT,),
     ).fetchall()
     if not rows:
-        return "no expenses yet. Try: add <payer> <amount>"
+        return "no expenses yet. Try: add veg 300 (samad)"
 
     n = effective_n()
+    members = get_members()
     paid, given, received = {}, {}, {}
     shared_total = 0.0
-    for payer, amount, recipient in rows:
+    orphans_total = 0.0  # pool amount with no paid_by assigned
+    for name, amount, paid_by, recipient in rows:
         if recipient:
-            given[payer] = given.get(payer, 0.0) + amount
+            given[paid_by] = given.get(paid_by, 0.0) + amount
             received[recipient] = received.get(recipient, 0.0) + amount
         else:
-            paid[payer] = paid.get(payer, 0.0) + amount
             shared_total += amount
+            if paid_by:
+                paid[paid_by] = paid.get(paid_by, 0.0) + amount
+            else:
+                orphans_total += amount
 
-    names = sorted(set(paid) | set(given) | set(received) | set(participants()))
+    universe = sorted(
+        set(members) | set(paid) | set(given) | set(received) | set(seen_participants())
+    )
     share = shared_total / n if n else 0.0
 
     lines = [
         "💰 *Expense balances*",
         f"shared pool: {fmt_amt(shared_total)}   split by: {n}   "
         f"per-person share: {fmt_amt(share)}",
-        "",
     ]
-    for name in names:
+    if orphans_total > 0:
+        lines.append(
+            f"⚠ {fmt_amt(orphans_total)} of the pool has no payer assigned — "
+            "run `members +name` and tag entries via `add` when you know who paid."
+        )
+    lines.append("")
+    for name in universe:
         p = paid.get(name, 0.0)
         g = given.get(name, 0.0)
         r = received.get(name, 0.0)
@@ -245,12 +389,15 @@ def cmd_total(_args=None):
             tag = "📉 owes   "
         else:
             tag = "✅ settled"
+        extras = []
+        if r:
+            extras.append(f"in {fmt_amt(r)}")
+        if g:
+            extras.append(f"out {fmt_amt(g)}")
+        extra_s = ", " + ", ".join(extras) if extras else ""
         lines.append(
             f"{tag}  *{name}*  → net {net:+.2f}   "
-            f"(paid {fmt_amt(p)}, share {fmt_amt(share)}"
-            + (f", in {fmt_amt(r)}" if r else "")
-            + (f", out {fmt_amt(g)}" if g else "")
-            + ")"
+            f"(paid {fmt_amt(p)}, share {fmt_amt(share)}{extra_s})"
         )
     return "\n".join(lines)
 
@@ -263,17 +410,19 @@ def cmd_list(args):
         except ValueError:
             pass
     rows = conn.execute(
-        "SELECT id, payer, amount, recipient, note "
+        "SELECT id, name, amount, paid_by, recipient, note "
         "FROM expense WHERE chat_jid=? ORDER BY created_at DESC LIMIT ?",
         (CHAT, n),
     ).fetchall()
     if not rows:
         return "no expenses yet."
     out = [f"last {len(rows)}:"]
-    for id_, payer, amount, recipient, note in rows:
-        line = f"  #{id_}  {payer} {fmt_amt(amount)}"
+    for id_, name, amount, paid_by, recipient, note in rows:
+        line = f"  #{id_}  {name} {fmt_amt(amount)}"
         if recipient:
-            line += f" → {recipient}"
+            line += f" ({paid_by}→{recipient})"
+        elif paid_by:
+            line += f" ({paid_by})"
         if note:
             line += f"  _{note}_"
         out.append(line)
@@ -302,13 +451,20 @@ def cmd_clear(_args):
 
 
 def cmd_who(_args=None):
-    ps = participants()
-    return "participants: " + (", ".join(ps) if ps else "(none)")
+    m = get_members()
+    s = seen_participants()
+    lines = [f"members ({len(m)}): " + (", ".join(m) if m else "(none set)")]
+    extra = sorted(set(s) - set(m))
+    if extra:
+        lines.append(f"also seen: {', '.join(extra)}")
+    return "\n".join(lines)
 
 
 ROUTES = {
     "add": cmd_add,
     "pay": cmd_pay,
+    "members": cmd_members,
+    "member": cmd_members,
     "split": cmd_split,
     "total": cmd_total,
     "sum": cmd_total,
@@ -320,7 +476,6 @@ ROUTES = {
     "clear": cmd_clear,
     "reset": cmd_clear,
     "who": cmd_who,
-    "members": cmd_who,
     "help": lambda _: usage(),
     "?": lambda _: usage(),
 }
@@ -332,24 +487,13 @@ def main():
         print(usage())
         return
 
-    # Natural-language shortcut:
-    #   "<payer> <amount>"              → add
-    #   "<payer> <amount> (<recipient>)" → pay
-    #   "<payer> <amount> words…"       → add with note
+    # Shortcut: "<name> <amount> ..." → add
     if (
         len(args) >= 2
         and args[0].lower() not in ROUTES
         and parse_amount(args[1]) is not None
     ):
-        if (
-            len(args) >= 3
-            and args[2].startswith("(")
-            and args[2].endswith(")")
-            and NAME_RE.match(strip_parens(args[2]))
-        ):
-            print(cmd_pay([args[0], args[1], args[2]]))
-        else:
-            print(cmd_add(args))
+        print(cmd_add(args))
         return
 
     cmd = args[0].lower()
