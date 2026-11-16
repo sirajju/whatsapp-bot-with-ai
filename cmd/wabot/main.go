@@ -155,6 +155,10 @@ func main() {
 	r.Register("short", "shorten a URL (is.gd)", commands.Short())
 	r.Register("qr", "generate a QR code image", commands.QR())
 	r.Register("meme", "make a meme (memegen.link)", commands.Meme())
+	// Presence (LAN tracker) — thin skill, HTTP-only; service is wifi-presence.
+	r.Register("home", "who is on the LAN right now", commands.Home(), "who")
+	r.Register("devices", "list every known LAN device", commands.DevicesList())
+	r.Register("label", "owner: name a device by MAC — !label <mac> <name> [owner]", commands.LabelDevice())
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 
@@ -187,6 +191,9 @@ func main() {
 
 	// Kick off background jobs (reminders)
 	commands.StartReminderLoop(ctx, cli, st, log)
+	// Presence alerter forwards arrival/departure/new-device events from the
+	// wifi-presence service to the first owner. No-op unless PRESENCE_ALERTS=on.
+	commands.StartPresenceAlerter(ctx, cli, cfg, log)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
