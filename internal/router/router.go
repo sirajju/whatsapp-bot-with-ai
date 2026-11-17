@@ -81,16 +81,21 @@ func (r *Router) Help() map[string]string { return r.help }
 // Dispatch parses a message event and calls the matching handler, if any.
 func (r *Router) Dispatch(ctx context.Context, evt *events.Message) {
 	text := ExtractText(evt)
-	if text == "" {
-		return
-	}
 	env := r.buildEnv(evt, text)
 
-	// Run hooks (antilink, blocklist) — they can swallow the message.
+	// Run hooks for every message (antilink, blocklist, intercom, …) — they
+	// can swallow the event. Media-only messages (voice notes, images with
+	// no caption) have empty text but still need hooks to run so intercom
+	// and similar passive handlers see them.
 	for _, h := range r.hooks {
 		if h(ctx, env) {
 			return
 		}
+	}
+
+	// Without text there's no command to dispatch; hooks were our only chance.
+	if text == "" {
+		return
 	}
 
 	if !strings.HasPrefix(text, r.cfg.Prefix) {

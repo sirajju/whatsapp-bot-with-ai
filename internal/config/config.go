@@ -39,6 +39,16 @@ type Config struct {
 
 	ElevenLabsKey     string
 	ElevenLabsVoiceID string
+
+	// Intercom: WhatsApp voice note from owner → MQTT → wall-phone speaker.
+	IntercomEnabled      bool
+	IntercomMQTTBroker   string
+	IntercomMQTTUser     string
+	IntercomMQTTPassword string
+	IntercomMQTTTopic    string
+	IntercomHTTPListen   string
+	IntercomPublicURL    string
+	IntercomCacheDir     string
 }
 
 func Load() (*Config, error) {
@@ -73,6 +83,15 @@ func Load() (*Config, error) {
 
 		ElevenLabsKey:     os.Getenv("ELEVENLABS_API_KEY"),
 		ElevenLabsVoiceID: os.Getenv("ELEVENLABS_VOICE_ID"),
+
+		IntercomEnabled:      strings.ToLower(os.Getenv("INTERCOM_ENABLED")) == "on",
+		IntercomMQTTBroker:   getenv("INTERCOM_MQTT_BROKER", "tcp://127.0.0.1:1883"),
+		IntercomMQTTUser:     os.Getenv("INTERCOM_MQTT_USER"),
+		IntercomMQTTPassword: os.Getenv("INTERCOM_MQTT_PASSWORD"),
+		IntercomMQTTTopic:    getenv("INTERCOM_MQTT_TOPIC", "intercom/play"),
+		IntercomHTTPListen:   getenv("INTERCOM_HTTP_LISTEN", "0.0.0.0:8766"),
+		IntercomPublicURL:    os.Getenv("INTERCOM_PUBLIC_URL"),
+		IntercomCacheDir:     getenv("INTERCOM_CACHE_DIR", "/tmp/wabot-intercom"),
 	}
 
 	if c.LoginMode == "pairing" && c.PairPhone == "" {

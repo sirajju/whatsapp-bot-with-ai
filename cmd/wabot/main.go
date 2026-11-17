@@ -18,6 +18,7 @@ import (
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/auth"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/commands"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/intercom"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/store"
 )
@@ -77,8 +78,40 @@ func main() {
 		log.Info().Int("tools", len(reg.Specs())).Msg("AI function-calling enabled")
 	}
 
+	// Intercom: WhatsApp voice note from owner → MQTT → wall-phone speaker.
+	// Started before hooks so its Handle method is wired into the first hook
+	// below and its HTTP server is up before messages start flowing.
+	intercomBr, err := intercom.New(intercom.Config{
+		Enabled:      cfg.IntercomEnabled,
+		MQTTBroker:   cfg.IntercomMQTTBroker,
+		MQTTUser:     cfg.IntercomMQTTUser,
+		MQTTPassword: cfg.IntercomMQTTPassword,
+		MQTTTopic:    cfg.IntercomMQTTTopic,
+		HTTPListen:   cfg.IntercomHTTPListen,
+		PublicURL:    cfg.IntercomPublicURL,
+		CacheDir:     cfg.IntercomCacheDir,
+		Owners:       cfg.Owners,
+	}, log)
+	if err != nil {
+		// Don't fatal — the rest of the bot works without intercom.
+		log.Error().Err(err).Msg("intercom disabled due to startup error")
+		intercomBr = nil
+	}
+	defer func() {
+		if intercomBr != nil {
+			intercomBr.Stop()
+		}
+	}()
+
 	// Passive hooks run before command dispatch, in order.
-	// Welcome fires first so a brand-new DM gets greeted AND auto-enabled for AI
+	// Intercom runs FIRST so a voice note from an owner is captured before
+	// anything else (AI fallback, TTS, etc.) has a chance to touch it.
+	if intercomBr != nil {
+		r.AddHook(func(ctx context.Context, env *router.Env) bool {
+			return intercomBr.Handle(ctx, env.Cli, env.Msg)
+		})
+	}
+	// Welcome fires next so a brand-new DM gets greeted AND auto-enabled for AI
 	// before any other hook or handler sees the message.
 	r.AddHook(commands.WelcomeHook())
 	r.AddHook(commands.BlocklistHook())
