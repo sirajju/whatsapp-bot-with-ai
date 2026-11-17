@@ -40,8 +40,10 @@ import (
 )
 
 const (
-	defaultListen     = "0.0.0.0:8766"
-	defaultCacheDir   = "/tmp/wabot-intercom"
+	defaultListen = "0.0.0.0:8766"
+	// Nested path so we don't collide with any file someone might scp to
+	// /tmp/<project>-* while staging a deployment.
+	defaultCacheDir   = "/tmp/wabot/intercom"
 	defaultTopic      = "intercom/play"
 	defaultTTL        = 10 * time.Minute
 	defaultMaxBytes   = 8 << 20 // 8 MB per clip; WhatsApp caps VN to ~16 MB
