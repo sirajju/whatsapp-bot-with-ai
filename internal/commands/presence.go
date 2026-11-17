@@ -83,6 +83,7 @@ type presenceDevice struct {
 	Label    string `json:"label"`
 	Owner    string `json:"owner"`
 	Vendor   string `json:"vendor"`
+	Hostname string `json:"hostname"`
 	LastIP   string `json:"last_ip"`
 	LastSeen string `json:"last_seen"`
 }
@@ -101,12 +102,13 @@ type presenceDeviceFull struct {
 }
 
 type presenceEvent struct {
-	ID      int64  `json:"id"`
-	TS      string `json:"ts"`
-	MAC     string `json:"mac"`
-	Kind    string `json:"kind"`
-	Payload string `json:"payload"`
-	Label   string `json:"label"`
+	ID       int64  `json:"id"`
+	TS       string `json:"ts"`
+	MAC      string `json:"mac"`
+	Kind     string `json:"kind"`
+	Payload  string `json:"payload"`
+	Label    string `json:"label"`
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // --- !home -----------------------------------------------------------------
@@ -261,15 +263,29 @@ func StartPresenceAlerter(ctx context.Context, cli *whatsmeow.Client, cfg *confi
 // --- formatting helpers ----------------------------------------------------
 
 func deviceLine(d presenceDevice) string {
+	// Prefer a human-set label; then the device's own hostname (NBNS / rDNS);
+	// then the owner tag; then whatever vendor the OUI table could tell us —
+	// and only fall back to the MAC when nothing else is available.
 	name := d.Label
 	if name == "" {
+		name = d.Hostname
+	}
+	if name == "" {
 		name = d.Owner
+	}
+	if name == "" && d.Vendor != "" && d.Vendor != "Randomized" {
+		name = d.Vendor
 	}
 	if name == "" {
 		name = d.MAC
 	}
 	meta := []string{}
-	if d.Vendor != "" {
+	// If we fell back to a name OTHER than the MAC, surface the MAC in the
+	// meta so you can still !label it or correlate across sessions.
+	if name != d.MAC {
+		meta = append(meta, d.MAC)
+	}
+	if d.Vendor != "" && d.Vendor != name {
 		meta = append(meta, d.Vendor)
 	}
 	if d.LastIP != "" {
@@ -285,7 +301,12 @@ func deviceLine(d presenceDevice) string {
 }
 
 func formatEvent(e presenceEvent) string {
+	// Prefer the human label; then the device's own hostname (DHCP/NBNS);
+	// only fall back to the MAC when nothing else is available.
 	name := e.Label
+	if name == "" {
+		name = e.Hostname
+	}
 	if name == "" {
 		name = e.MAC
 	}

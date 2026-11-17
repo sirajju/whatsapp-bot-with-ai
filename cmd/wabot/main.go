@@ -156,8 +156,8 @@ func main() {
 	r.Register("qr", "generate a QR code image", commands.QR())
 	r.Register("meme", "make a meme (memegen.link)", commands.Meme())
 	// Presence (LAN tracker) — thin skill, HTTP-only; service is wifi-presence.
-	r.Register("home", "who is on the LAN right now", commands.Home(), "who")
-	r.Register("devices", "list every known LAN device", commands.DevicesList())
+	r.Register("home", "owner: who is on the LAN right now", commands.Home(), "who")
+	r.Register("devices", "owner: list every known LAN device", commands.DevicesList())
 	r.Register("label", "owner: name a device by MAC — !label <mac> <name> [owner]", commands.LabelDevice())
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
