@@ -192,6 +192,8 @@ func main() {
 	r.Register("home", "owner: who is on the LAN right now", commands.Home(), "who")
 	r.Register("devices", "owner: list every known LAN device", commands.DevicesList())
 	r.Register("label", "owner: name a device by MAC — !label <mac> <name> [owner]", commands.LabelDevice())
+	// CCTV — HTTP snapshot from IP Webcam on the wall phone, served back as image.
+	r.Register("cctv", "owner: snapshot from the wall-phone camera", commands.CCTV(), "cam", "snap")
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 

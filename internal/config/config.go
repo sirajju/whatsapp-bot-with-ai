@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -49,6 +50,13 @@ type Config struct {
 	IntercomHTTPListen   string
 	IntercomPublicURL    string
 	IntercomCacheDir     string
+
+	// CCTV: HTTP snapshot URL (e.g. IP Webcam). /cctv fetches it and posts
+	// the JPEG as an image message back to the chat.
+	CCTVURL      string
+	CCTVUser     string
+	CCTVPassword string
+	CCTVTimeout  time.Duration
 }
 
 func Load() (*Config, error) {
@@ -92,6 +100,11 @@ func Load() (*Config, error) {
 		IntercomHTTPListen:   getenv("INTERCOM_HTTP_LISTEN", "0.0.0.0:8766"),
 		IntercomPublicURL:    os.Getenv("INTERCOM_PUBLIC_URL"),
 		IntercomCacheDir:     getenv("INTERCOM_CACHE_DIR", "/tmp/wabot-intercom"),
+
+		CCTVURL:      strings.TrimSpace(os.Getenv("CCTV_URL")),
+		CCTVUser:     os.Getenv("CCTV_USER"),
+		CCTVPassword: os.Getenv("CCTV_PASSWORD"),
+		CCTVTimeout:  parseDurationOr(os.Getenv("CCTV_TIMEOUT"), 15*time.Second),
 	}
 
 	if c.LoginMode == "pairing" && c.PairPhone == "" {
@@ -103,6 +116,15 @@ func Load() (*Config, error) {
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	if s = strings.TrimSpace(s); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			return d
+		}
 	}
 	return def
 }
