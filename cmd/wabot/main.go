@@ -193,7 +193,8 @@ func main() {
 	r.Register("devices", "owner: list every known LAN device", commands.DevicesList())
 	r.Register("label", "owner: name a device by MAC — !label <mac> <name> [owner]", commands.LabelDevice())
 	// CCTV — HTTP snapshot from IP Webcam on the wall phone, served back as image.
-	r.Register("cctv", "owner: snapshot from the wall-phone camera", commands.CCTV(), "cam", "snap")
+	// Passes intercomBr so wake/sleep commands can share the MQTT broker.
+	r.Register("cctv", "owner: snapshot from the wall-phone camera", commands.CCTV(intercomBr), "cam", "snap")
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 

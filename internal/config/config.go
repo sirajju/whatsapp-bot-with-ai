@@ -52,11 +52,17 @@ type Config struct {
 	IntercomCacheDir     string
 
 	// CCTV: HTTP snapshot URL (e.g. IP Webcam). /cctv fetches it and posts
-	// the JPEG as an image message back to the chat.
-	CCTVURL      string
-	CCTVUser     string
-	CCTVPassword string
-	CCTVTimeout  time.Duration
+	// the JPEG as an image message back to the chat. When CCTVControlTopic
+	// is set, wabot asks the wall phone (via MQTT) to START IP Webcam just
+	// before fetching and STOP it right after, so the camera isn't running
+	// idle in the background.
+	CCTVURL           string
+	CCTVUser          string
+	CCTVPassword      string
+	CCTVTimeout       time.Duration
+	CCTVControlTopic  string
+	CCTVStartTimeout  time.Duration
+	CCTVAutoStop      bool
 }
 
 func Load() (*Config, error) {
@@ -101,10 +107,13 @@ func Load() (*Config, error) {
 		IntercomPublicURL:    os.Getenv("INTERCOM_PUBLIC_URL"),
 		IntercomCacheDir:     getenv("INTERCOM_CACHE_DIR", "/tmp/wabot-intercom"),
 
-		CCTVURL:      strings.TrimSpace(os.Getenv("CCTV_URL")),
-		CCTVUser:     os.Getenv("CCTV_USER"),
-		CCTVPassword: os.Getenv("CCTV_PASSWORD"),
-		CCTVTimeout:  parseDurationOr(os.Getenv("CCTV_TIMEOUT"), 15*time.Second),
+		CCTVURL:          strings.TrimSpace(os.Getenv("CCTV_URL")),
+		CCTVUser:         os.Getenv("CCTV_USER"),
+		CCTVPassword:     os.Getenv("CCTV_PASSWORD"),
+		CCTVTimeout:      parseDurationOr(os.Getenv("CCTV_TIMEOUT"), 15*time.Second),
+		CCTVControlTopic: strings.TrimSpace(os.Getenv("CCTV_CONTROL_TOPIC")),
+		CCTVStartTimeout: parseDurationOr(os.Getenv("CCTV_START_TIMEOUT"), 20*time.Second),
+		CCTVAutoStop:     strings.ToLower(os.Getenv("CCTV_AUTO_STOP")) != "off",
 	}
 
 	if c.LoginMode == "pairing" && c.PairPhone == "" {

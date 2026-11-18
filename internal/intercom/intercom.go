@@ -190,6 +190,21 @@ func New(cfg Config, log zerolog.Logger) (*Bridge, error) {
 	return b, nil
 }
 
+// Publish sends an MQTT message on the shared intercom client — exposed so
+// other wabot modules (e.g. the CCTV command) can share the broker
+// connection without opening a second client. No-op when the bridge is
+// disabled or not connected.
+func (b *Bridge) Publish(topic string, payload []byte) error {
+	if b == nil || !b.cfg.Enabled || b.mqttCli == nil || !b.mqttCli.IsConnected() {
+		return fmt.Errorf("intercom MQTT not available")
+	}
+	tok := b.mqttCli.Publish(topic, 1, false, payload)
+	if !tok.WaitTimeout(3 * time.Second) {
+		return fmt.Errorf("mqtt publish timed out")
+	}
+	return tok.Error()
+}
+
 // Stop cleans up HTTP + MQTT. Safe to call when New errored (no-op).
 func (b *Bridge) Stop() {
 	if b.cancel != nil {
