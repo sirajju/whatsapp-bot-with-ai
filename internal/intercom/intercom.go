@@ -290,10 +290,17 @@ func (b *Bridge) forward(ctx context.Context, cli *whatsmeow.Client, evt *events
 	b.files[id+ext] = time.Now().Unix()
 	b.mu.Unlock()
 
+	// Prefer the phone-number JID for display. On modern WhatsApp
+	// evt.Info.Sender.User is often a LID (looks like a random number);
+	// the phone number lives in SenderAlt.User when the primary is a LID.
+	senderDisplay := evt.Info.Sender.User
+	if alt := evt.Info.SenderAlt; !alt.IsEmpty() && alt.User != "" {
+		senderDisplay = alt.User
+	}
 	msg := playMessage{
 		URL:     fmt.Sprintf("%s/audio/%s%s", b.cfg.PublicURL, id, ext),
 		Seconds: int(a.GetSeconds()),
-		Sender:  evt.Info.Sender.User,
+		Sender:  senderDisplay,
 		ID:      id,
 		TS:      time.Now().Unix(),
 	}
