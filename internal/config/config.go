@@ -64,6 +64,14 @@ type Config struct {
 	CCTVControlTopic  string
 	CCTVStartTimeout  time.Duration
 	CCTVAutoStop      bool
+	// Live-stream support for !cctv on [seconds] / !cctv off.
+	// CCTVStreamURL is the MJPEG endpoint (default: CCTV_URL with "/shot.jpg"
+	// swapped for "/video"). CCTVStreamURLExt is an optional second URL for
+	// off-LAN access (typically the phone's Tailscale IP).
+	CCTVStreamURL      string
+	CCTVStreamURLExt   string
+	CCTVLiveDefault    time.Duration
+	CCTVLiveMax        time.Duration
 
 	// Startup "I'm up" DM to the first OWNER when wabot authenticates with
 	// WhatsApp for the first time this process lifetime.
@@ -130,6 +138,11 @@ func Load() (*Config, error) {
 		CCTVControlTopic: strings.TrimSpace(os.Getenv("CCTV_CONTROL_TOPIC")),
 		CCTVStartTimeout: parseDurationOr(os.Getenv("CCTV_START_TIMEOUT"), 20*time.Second),
 		CCTVAutoStop:     strings.ToLower(os.Getenv("CCTV_AUTO_STOP")) != "off",
+
+		CCTVStreamURL:    strings.TrimSpace(os.Getenv("CCTV_STREAM_URL")),
+		CCTVStreamURLExt: strings.TrimSpace(os.Getenv("CCTV_STREAM_URL_EXT")),
+		CCTVLiveDefault:  parseDurationOr(os.Getenv("CCTV_LIVE_DEFAULT"), 120*time.Second),
+		CCTVLiveMax:      parseDurationOr(os.Getenv("CCTV_LIVE_MAX"), 600*time.Second),
 
 		StartupNotify: strings.ToLower(os.Getenv("STARTUP_NOTIFY")) != "off",
 
