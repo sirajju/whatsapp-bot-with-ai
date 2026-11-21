@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -36,7 +37,10 @@ import (
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/media"
 )
 
 const (
@@ -82,6 +86,11 @@ type Bridge struct {
 	httpSrv *http.Server
 	mqttCli mqtt.Client
 	cancel  context.CancelFunc
+
+	// Set from main.go after whatsmeow connects. Guarded by cliMu because the
+	// HTTP handler reads it from a different goroutine than SetClient.
+	cliMu sync.RWMutex
+	cli   *whatsmeow.Client
 }
 
 // playMessage is the JSON we publish to the MQTT topic.
@@ -161,6 +170,7 @@ func New(cfg Config, log zerolog.Logger) (*Bridge, error) {
 	// HTTP audio server.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/audio/", b.serveAudio)
+	mux.HandleFunc("/voice-from-home", b.voiceFromHome)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok\n"))
 	})
@@ -188,6 +198,19 @@ func New(cfg Config, log zerolog.Logger) (*Bridge, error) {
 	go b.janitor(jctx)
 
 	return b, nil
+}
+
+// SetClient hands the Bridge the whatsmeow client so HTTP handlers (which run
+// off their own goroutines and don't get called with `cli` like Handle does)
+// can send WhatsApp messages. Safe to call before the client is Connected —
+// the handlers themselves check IsConnected.
+func (b *Bridge) SetClient(cli *whatsmeow.Client) {
+	if b == nil {
+		return
+	}
+	b.cliMu.Lock()
+	b.cli = cli
+	b.cliMu.Unlock()
 }
 
 // Publish sends an MQTT message on the shared intercom client — exposed so
@@ -344,6 +367,114 @@ func (b *Bridge) forward(ctx context.Context, cli *whatsmeow.Client, evt *events
 
 	b.log.Info().Str("id", id).Int("bytes", len(raw)).Int("sec", msg.Seconds).Msg("intercom: forwarded")
 	_ = react(ctx, cli, evt, "📣")
+}
+
+// voiceFromHome accepts a voice recording from the wall-phone kiosk and
+// forwards it to the first owner as a WhatsApp voice note. Any origin on the
+// LAN can POST — the broker already sits behind the house NAT. Payload is the
+// raw audio bytes in the request body (not multipart) so the kiosk can stream
+// a MediaRecorder blob directly.
+//
+//	POST /voice-from-home
+//	Content-Type: audio/webm (or audio/ogg; codecs=opus)
+//
+// Response: 200 OK on send, 4xx/5xx with a short reason otherwise.
+func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
+	// CORS so the kiosk page (served from HA on :8123) can POST here (:8766).
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if len(b.cfg.Owners) == 0 {
+		http.Error(w, "no owner configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	b.cliMu.RLock()
+	cli := b.cli
+	b.cliMu.RUnlock()
+	if cli == nil || !cli.IsConnected() {
+		http.Error(w, "whatsapp not connected", http.StatusServiceUnavailable)
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(b.cfg.MaxBytes)+1))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(raw) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	if len(raw) > b.cfg.MaxBytes {
+		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	inExt := ".webm"
+	if ct := strings.ToLower(r.Header.Get("Content-Type")); ct != "" {
+		switch {
+		case strings.Contains(ct, "ogg"):
+			inExt = ".ogg"
+		case strings.Contains(ct, "mp4"), strings.Contains(ct, "aac"):
+			inExt = ".m4a"
+		case strings.Contains(ct, "mpeg"), strings.Contains(ct, "mp3"):
+			inExt = ".mp3"
+		case strings.Contains(ct, "wav"):
+			inExt = ".wav"
+		}
+	}
+
+	convCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	ogg, err := media.OggOpusFromAny(convCtx, raw, inExt)
+	if err != nil {
+		b.log.Error().Err(err).Str("in_ext", inExt).Int("bytes", len(raw)).Msg("voice-from-home: transcode failed")
+		http.Error(w, "transcode failed", http.StatusInternalServerError)
+		return
+	}
+
+	up, err := cli.Upload(convCtx, ogg, whatsmeow.MediaAudio)
+	if err != nil {
+		b.log.Error().Err(err).Msg("voice-from-home: upload failed")
+		http.Error(w, "upload failed", http.StatusInternalServerError)
+		return
+	}
+
+	owner := types.JID{User: b.cfg.Owners[0], Server: types.DefaultUserServer}
+	mime := "audio/ogg; codecs=opus"
+	ptt := true
+	flen := uint64(len(ogg))
+	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{
+		AudioMessage: &waE2E.AudioMessage{
+			URL:           &up.URL,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			MediaKey:      up.MediaKey,
+			Mimetype:      &mime,
+			DirectPath:    &up.DirectPath,
+			FileLength:    &flen,
+			PTT:           &ptt,
+		},
+	})
+	if err != nil {
+		b.log.Error().Err(err).Msg("voice-from-home: send failed")
+		http.Error(w, "send failed", http.StatusInternalServerError)
+		return
+	}
+
+	b.log.Info().Str("to", b.cfg.Owners[0]).Int("in_bytes", len(raw)).Int("ogg_bytes", len(ogg)).Msg("voice-from-home: delivered")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
 // serveAudio streams a cached clip. Only known UUIDs are served.

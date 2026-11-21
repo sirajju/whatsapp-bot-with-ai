@@ -17,6 +17,13 @@ func OggOpusFromMP3(ctx context.Context, mp3 []byte) ([]byte, error) {
 		"-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-ac", "1")
 }
 
+// OggOpusFromAny converts arbitrary audio bytes (webm/ogg/wav/m4a) to an
+// Opus-in-Ogg container so WhatsApp renders the result as a voice note.
+func OggOpusFromAny(ctx context.Context, raw []byte, inExt string) ([]byte, error) {
+	return ffmpegTranscode(ctx, raw, inExt, ".ogg",
+		"-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-ac", "1")
+}
+
 // MP3FromAny converts arbitrary audio bytes (ogg/opus/wav/m4a) to a 44.1 kHz mono MP3
 // — ElevenLabs's /voices/add endpoint likes compact MP3 samples.
 func MP3FromAny(ctx context.Context, raw []byte, inExt string) ([]byte, error) {

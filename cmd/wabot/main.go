@@ -103,6 +103,11 @@ func main() {
 		log.Error().Err(err).Msg("intercom disabled due to startup error")
 		intercomBr = nil
 	}
+	if intercomBr != nil {
+		// Give the bridge the whatsmeow client so /voice-from-home can send
+		// WhatsApp voice notes from the wall-phone kiosk.
+		intercomBr.SetClient(cli)
+	}
 	defer func() {
 		if intercomBr != nil {
 			intercomBr.Stop()
