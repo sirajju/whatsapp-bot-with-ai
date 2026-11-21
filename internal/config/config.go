@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +64,21 @@ type Config struct {
 	CCTVControlTopic  string
 	CCTVStartTimeout  time.Duration
 	CCTVAutoStop      bool
+
+	// Startup "I'm up" DM to the first OWNER when wabot authenticates with
+	// WhatsApp for the first time this process lifetime.
+	StartupNotify bool
+
+	// System health monitor — probes /proc/meminfo, / disk, /proc/loadavg,
+	// /sys/class/thermal/* on an interval; alerts the first OWNER when a
+	// threshold is crossed.
+	MonitorEnabled  bool
+	MonitorInterval time.Duration
+	MonitorMemPct   int
+	MonitorDiskPct  int
+	MonitorLoadMult float64
+	MonitorTempC    float64
+	MonitorCooldown time.Duration
 }
 
 func Load() (*Config, error) {
@@ -114,6 +130,16 @@ func Load() (*Config, error) {
 		CCTVControlTopic: strings.TrimSpace(os.Getenv("CCTV_CONTROL_TOPIC")),
 		CCTVStartTimeout: parseDurationOr(os.Getenv("CCTV_START_TIMEOUT"), 20*time.Second),
 		CCTVAutoStop:     strings.ToLower(os.Getenv("CCTV_AUTO_STOP")) != "off",
+
+		StartupNotify: strings.ToLower(os.Getenv("STARTUP_NOTIFY")) != "off",
+
+		MonitorEnabled:  strings.ToLower(os.Getenv("MONITOR_ENABLED")) == "on",
+		MonitorInterval: parseDurationOr(os.Getenv("MONITOR_INTERVAL"), 60*time.Second),
+		MonitorMemPct:   parseIntOr(os.Getenv("MONITOR_MEM_PCT"), 15),
+		MonitorDiskPct:  parseIntOr(os.Getenv("MONITOR_DISK_PCT"), 10),
+		MonitorLoadMult: parseFloatOr(os.Getenv("MONITOR_LOAD_MULT"), 2.0),
+		MonitorTempC:    parseFloatOr(os.Getenv("MONITOR_TEMP_C"), 75.0),
+		MonitorCooldown: parseDurationOr(os.Getenv("MONITOR_COOLDOWN"), 30*time.Minute),
 	}
 
 	if c.LoginMode == "pairing" && c.PairPhone == "" {
@@ -133,6 +159,24 @@ func parseDurationOr(s string, def time.Duration) time.Duration {
 	if s = strings.TrimSpace(s); s != "" {
 		if d, err := time.ParseDuration(s); err == nil {
 			return d
+		}
+	}
+	return def
+}
+
+func parseIntOr(s string, def int) int {
+	if s = strings.TrimSpace(s); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func parseFloatOr(s string, def float64) float64 {
+	if s = strings.TrimSpace(s); s != "" {
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
 		}
 	}
 	return def

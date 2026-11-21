@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,7 +12,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/ai"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/aitools"
@@ -19,6 +23,7 @@ import (
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/commands"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/intercom"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/monitor"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/store"
 )
@@ -198,7 +203,23 @@ func main() {
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 
+	// Shared "send text to the first owner" func — used by the startup DM and
+	// the system monitor. Returns false (silently) when no owners are set.
+	notifyOwner := func(text string) bool {
+		if len(cfg.Owners) == 0 {
+			return false
+		}
+		owner := types.NewJID(cfg.Owners[0], types.DefaultUserServer)
+		_, err := cli.SendMessage(ctx, owner, &waE2E.Message{Conversation: proto.String(text)})
+		if err != nil {
+			log.Warn().Err(err).Msg("notifyOwner: send failed")
+			return false
+		}
+		return true
+	}
+
 	// Wire whatsmeow event handler.
+	var startupNotified bool
 	cli.AddEventHandler(func(evt any) {
 		switch e := evt.(type) {
 		case *events.Message:
@@ -207,6 +228,15 @@ func main() {
 			commands.GroupParticipantHandler(cli, st)(e)
 		case *events.Connected:
 			log.Info().Msg("connected")
+			if cfg.StartupNotify && !startupNotified {
+				startupNotified = true
+				go func() {
+					// Give the WhatsApp session a beat to settle before sending.
+					time.Sleep(3 * time.Second)
+					host, _ := os.Hostname()
+					notifyOwner(fmt.Sprintf("🟢 *wabot up* on `%s` at %s", host, time.Now().Format("Jan 2 15:04 MST")))
+				}()
+			}
 		case *events.Disconnected:
 			log.Warn().Msg("disconnected (whatsmeow will auto-reconnect)")
 		case *events.LoggedOut:
@@ -230,6 +260,18 @@ func main() {
 	// Presence alerter forwards arrival/departure/new-device events from the
 	// wifi-presence service to the first owner. No-op unless PRESENCE_ALERTS=on.
 	commands.StartPresenceAlerter(ctx, cli, cfg, log)
+	// System health monitor — probes cpu/ram/disk/temp on an interval and
+	// DMs the first owner on threshold crossings.
+	mon := monitor.New(monitor.Config{
+		Enabled:  cfg.MonitorEnabled,
+		Interval: cfg.MonitorInterval,
+		MemPct:   cfg.MonitorMemPct,
+		DiskPct:  cfg.MonitorDiskPct,
+		LoadMult: cfg.MonitorLoadMult,
+		TempC:    cfg.MonitorTempC,
+		Cooldown: cfg.MonitorCooldown,
+	}, log, func(text string) { notifyOwner(text) })
+	go mon.Start(ctx)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
