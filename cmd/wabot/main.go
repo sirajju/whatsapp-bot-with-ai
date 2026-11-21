@@ -96,6 +96,8 @@ func main() {
 		HTTPListen:   cfg.IntercomHTTPListen,
 		PublicURL:    cfg.IntercomPublicURL,
 		CacheDir:     cfg.IntercomCacheDir,
+		TLSCertFile:  cfg.IntercomTLSCert,
+		TLSKeyFile:   cfg.IntercomTLSKey,
 		Owners:       cfg.Owners,
 	}, log)
 	if err != nil {

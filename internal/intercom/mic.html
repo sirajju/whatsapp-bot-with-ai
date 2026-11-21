@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>Voice to Sirajju</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0b0e;
+      --fg: #f5f5f7;
+      --muted: #888;
+      --accent: #ff3b30;
+      --accent-dim: #701813;
+      --ok: #30d158;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+                 height: 100%; font: 16px -apple-system, system-ui, sans-serif;
+                 overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+    .wrap { max-width: 480px; margin: 0 auto; padding: 24px 20px;
+            min-height: 100dvh; display: flex; flex-direction: column; gap: 24px; }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    header .back { background: #22222a; color: var(--fg); border: 0; padding: 10px 14px;
+                   border-radius: 999px; font-size: 15px; }
+    header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    .stage { flex: 1; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 28px; text-align: center; }
+    .status { color: var(--muted); font-size: 14px; min-height: 20px; }
+    .mic {
+      width: 180px; height: 180px; border-radius: 50%;
+      border: none; background: var(--accent); color: white;
+      font-size: 72px; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 10px 40px rgba(255,59,48,0.4);
+      transition: transform 0.1s ease, background 0.15s ease;
+      touch-action: manipulation;
+    }
+    .mic:active { transform: scale(0.96); }
+    .mic.recording { background: var(--accent-dim); animation: pulse 1.4s ease-in-out infinite; }
+    .mic.done { background: var(--ok); box-shadow: 0 10px 40px rgba(48,209,88,0.4); }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 10px 40px rgba(255,59,48,0.4); }
+      50% { box-shadow: 0 10px 60px rgba(255,59,48,0.8); }
+    }
+    .timer { font-size: 36px; font-variant-numeric: tabular-nums; min-height: 44px; }
+    audio { width: 100%; max-width: 360px; }
+    .actions { display: flex; gap: 12px; width: 100%; max-width: 360px; }
+    .btn { flex: 1; padding: 16px 20px; border-radius: 14px; border: 0;
+           font-size: 16px; font-weight: 600; touch-action: manipulation; }
+    .btn.primary { background: var(--ok); color: #000; }
+    .btn.secondary { background: #2a2a33; color: var(--fg); }
+    .btn:disabled { opacity: 0.4; }
+    .err { color: #ff6b63; font-size: 14px; max-width: 340px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <button class="back" onclick="history.back()">← Back</button>
+      <h1>Voice to Sirajju</h1>
+      <span style="width: 56px"></span>
+    </header>
+    <div class="stage">
+      <div class="status" id="status">Tap the mic to start</div>
+      <button class="mic" id="mic" aria-label="Record">🎙️</button>
+      <div class="timer" id="timer">0:00</div>
+      <audio id="preview" controls hidden></audio>
+      <div class="actions" id="actions" hidden>
+        <button class="btn secondary" id="again">Retry</button>
+        <button class="btn primary" id="send">Send →</button>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+  </div>
+<script>
+const WABOT_URL = '/voice-from-home';
+const MAX_SECONDS = 60;
+const $ = id => document.getElementById(id);
+const mic = $('mic'), status = $('status'), timer = $('timer'),
+      preview = $('preview'), actions = $('actions'), err = $('err'),
+      again = $('again'), send = $('send');
+
+let state = 'idle', rec, chunks = [], blob = null, startedAt = 0, tick = null;
+const fmt = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+
+function setState(s) {
+  state = s;
+  mic.classList.remove('recording', 'done');
+  err.textContent = '';
+  switch (s) {
+    case 'idle':
+      status.textContent = 'Tap the mic to start';
+      timer.textContent = '0:00';
+      preview.hidden = true; actions.hidden = true;
+      mic.disabled = false; break;
+    case 'recording':
+      status.textContent = 'Recording… tap mic to stop';
+      mic.classList.add('recording'); actions.hidden = true; break;
+    case 'review':
+      status.textContent = 'Preview below, then send';
+      mic.classList.add('done'); actions.hidden = false;
+      send.disabled = false; again.disabled = false; break;
+    case 'sending':
+      status.textContent = 'Sending to Sirajju…';
+      mic.disabled = true; send.disabled = true; again.disabled = true; break;
+    case 'sent':
+      status.textContent = '✓ Sent';
+      mic.classList.add('done');
+      setTimeout(() => history.back(), 1200); break;
+  }
+}
+
+function pickMime() {
+  const prefs = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus',
+                 'audio/ogg','audio/mp4'];
+  for (const m of prefs) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+
+async function startRec() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    err.textContent = 'Browser has no mic API. Reload the page.';
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      channelCount: 1, echoCancellation: true, noiseSuppression: true
+    }});
+    const mime = pickMime();
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    chunks = [];
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+      preview.src = URL.createObjectURL(blob);
+      preview.hidden = false;
+      setState('review');
+      if (tick) { clearInterval(tick); tick = null; }
+    };
+    rec.start();
+    setState('recording');
+    startedAt = Date.now();
+    tick = setInterval(() => {
+      const s = Math.floor((Date.now() - startedAt) / 1000);
+      timer.textContent = fmt(s);
+      if (s >= MAX_SECONDS) stopRec();
+    }, 250);
+  } catch (e) {
+    err.textContent = 'Mic denied or unavailable: ' + (e.message || e.name);
+    setState('idle');
+  }
+}
+
+function stopRec() {
+  if (rec && rec.state === 'recording') rec.stop();
+}
+
+mic.addEventListener('click', () => {
+  if (state === 'idle') startRec();
+  else if (state === 'recording') stopRec();
+  else if (state === 'review') { setState('idle'); blob = null; }
+});
+
+again.addEventListener('click', () => { setState('idle'); blob = null; });
+
+send.addEventListener('click', async () => {
+  if (!blob) return;
+  setState('sending');
+  try {
+    const res = await fetch(WABOT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error('HTTP ' + res.status + (txt ? ': ' + txt : ''));
+    }
+    setState('sent');
+  } catch (e) {
+    err.textContent = 'Send failed: ' + (e.message || e);
+    mic.disabled = false; send.disabled = false; again.disabled = false;
+    status.textContent = 'Error — tap Send to retry, or Retry to re-record';
+  }
+});
+
+setState('idle');
+</script>
+</body>
+</html>

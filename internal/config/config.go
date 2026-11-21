@@ -51,6 +51,8 @@ type Config struct {
 	IntercomHTTPListen   string
 	IntercomPublicURL    string
 	IntercomCacheDir     string
+	IntercomTLSCert      string // PEM cert file; enables HTTPS on the intercom server when set with TLSKey
+	IntercomTLSKey       string // PEM key file
 
 	// CCTV: HTTP snapshot URL (e.g. IP Webcam). /cctv fetches it and posts
 	// the JPEG as an image message back to the chat. When CCTVControlTopic
@@ -137,6 +139,8 @@ func Load() (*Config, error) {
 		IntercomHTTPListen:   getenv("INTERCOM_HTTP_LISTEN", "0.0.0.0:8766"),
 		IntercomPublicURL:    os.Getenv("INTERCOM_PUBLIC_URL"),
 		IntercomCacheDir:     getenv("INTERCOM_CACHE_DIR", "/tmp/wabot-intercom"),
+		IntercomTLSCert:      os.Getenv("INTERCOM_TLS_CERT"),
+		IntercomTLSKey:       os.Getenv("INTERCOM_TLS_KEY"),
 
 		CCTVURL:          strings.TrimSpace(os.Getenv("CCTV_URL")),
 		CCTVUser:         os.Getenv("CCTV_USER"),

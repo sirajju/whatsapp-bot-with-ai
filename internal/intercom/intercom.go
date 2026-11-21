@@ -20,6 +20,7 @@ package intercom
 import (
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,9 @@ import (
 
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/media"
 )
+
+//go:embed mic.html
+var micHTML []byte
 
 const (
 	defaultListen = "0.0.0.0:8766"
@@ -69,6 +73,12 @@ type Config struct {
 	CacheDir   string
 	TTL        time.Duration
 	MaxBytes   int
+
+	// Optional TLS. When both are non-empty, the intercom HTTP server runs
+	// over HTTPS — needed so browsers will hand out microphone permission
+	// to the kiosk mic page.
+	TLSCertFile string
+	TLSKeyFile  string
 
 	// Only owners (by JID User-part) may trigger the intercom; wired from
 	// cfg.Owners at startup.
@@ -167,10 +177,12 @@ func New(cfg Config, log zerolog.Logger) (*Bridge, error) {
 	}
 	log.Info().Str("broker", cfg.MQTTBroker).Str("topic", cfg.MQTTTopic).Msg("mqtt connected")
 
-	// HTTP audio server.
+	// HTTP (or HTTPS) audio server.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/audio/", b.serveAudio)
 	mux.HandleFunc("/voice-from-home", b.voiceFromHome)
+	mux.HandleFunc("/mic", b.serveMic)
+	mux.HandleFunc("/mic.html", b.serveMic)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok\n"))
 	})
@@ -185,12 +197,20 @@ func New(cfg Config, log zerolog.Logger) (*Bridge, error) {
 		b.mqttCli.Disconnect(100)
 		return nil, fmt.Errorf("intercom: listen %s: %w", cfg.HTTPListen, err)
 	}
+
+	useTLS := cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
 	go func() {
-		if err := b.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			b.log.Error().Err(err).Msg("audio server exited")
+		var serveErr error
+		if useTLS {
+			serveErr = b.httpSrv.ServeTLS(ln, cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			serveErr = b.httpSrv.Serve(ln)
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			b.log.Error().Err(serveErr).Msg("audio server exited")
 		}
 	}()
-	log.Info().Str("listen", cfg.HTTPListen).Str("public", cfg.PublicURL).Msg("audio server up")
+	log.Info().Str("listen", cfg.HTTPListen).Str("public", cfg.PublicURL).Bool("tls", useTLS).Msg("audio server up")
 
 	// TTL janitor.
 	jctx, cancel := context.WithCancel(context.Background())
@@ -367,6 +387,14 @@ func (b *Bridge) forward(ctx context.Context, cli *whatsmeow.Client, evt *events
 
 	b.log.Info().Str("id", id).Int("bytes", len(raw)).Int("sec", msg.Seconds).Msg("intercom: forwarded")
 	_ = react(ctx, cli, evt, "📣")
+}
+
+// serveMic ships the embedded kiosk voice-recorder page. Served at /mic and
+// /mic.html so the dashboard button can link to whichever is shorter.
+func (b *Bridge) serveMic(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(micHTML)
 }
 
 // voiceFromHome accepts a voice recording from the wall-phone kiosk and
