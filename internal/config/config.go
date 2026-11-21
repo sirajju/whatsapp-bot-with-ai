@@ -87,6 +87,13 @@ type Config struct {
 	MonitorLoadMult float64
 	MonitorTempC    float64
 	MonitorCooldown time.Duration
+
+	// Household ping — passive MQTT subscriber that DMs the first owner
+	// whenever anyone publishes to HouseholdPingTopic. The wall-phone HA
+	// dashboard's "Ping me" button fires this.
+	HouseholdEnabled      bool
+	HouseholdPingTopic    string
+	HouseholdPingCooldown time.Duration
 }
 
 func Load() (*Config, error) {
@@ -153,6 +160,10 @@ func Load() (*Config, error) {
 		MonitorLoadMult: parseFloatOr(os.Getenv("MONITOR_LOAD_MULT"), 2.0),
 		MonitorTempC:    parseFloatOr(os.Getenv("MONITOR_TEMP_C"), 75.0),
 		MonitorCooldown: parseDurationOr(os.Getenv("MONITOR_COOLDOWN"), 30*time.Minute),
+
+		HouseholdEnabled:      strings.ToLower(os.Getenv("HOUSEHOLD_ENABLED")) != "off",
+		HouseholdPingTopic:    getenv("HOUSEHOLD_PING_TOPIC", "household/ping"),
+		HouseholdPingCooldown: parseDurationOr(os.Getenv("HOUSEHOLD_PING_COOLDOWN"), 10*time.Second),
 	}
 
 	if c.LoginMode == "pairing" && c.PairPhone == "" {

@@ -22,6 +22,7 @@ import (
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/auth"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/commands"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/config"
+	"github.com/sirajju/whatsapp-bot-with-ai/internal/household"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/intercom"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/monitor"
 	"github.com/sirajju/whatsapp-bot-with-ai/internal/router"
@@ -260,6 +261,14 @@ func main() {
 	// Presence alerter forwards arrival/departure/new-device events from the
 	// wifi-presence service to the first owner. No-op unless PRESENCE_ALERTS=on.
 	commands.StartPresenceAlerter(ctx, cli, cfg, log)
+	// Household Pinger — subscribes to HOUSEHOLD_PING_TOPIC and DMs the first
+	// owner on any message. "Someone at home is calling you."
+	if cfg.HouseholdEnabled && intercomBr != nil {
+		if _, err := household.NewPinger(intercomBr, cfg.HouseholdPingTopic, cfg.HouseholdPingCooldown, notifyOwner, log); err != nil {
+			log.Warn().Err(err).Msg("household ping not available")
+		}
+	}
+
 	// System health monitor — probes cpu/ram/disk/temp on an interval and
 	// DMs the first owner on threshold crossings.
 	mon := monitor.New(monitor.Config{

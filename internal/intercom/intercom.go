@@ -205,6 +205,20 @@ func (b *Bridge) Publish(topic string, payload []byte) error {
 	return tok.Error()
 }
 
+// Subscribe registers a handler for an MQTT topic on the shared intercom
+// client. Exposed for other wabot modules (household ping, etc.) that want to
+// react to MQTT without opening their own broker connection.
+func (b *Bridge) Subscribe(topic string, qos byte, handler mqtt.MessageHandler) error {
+	if b == nil || !b.cfg.Enabled || b.mqttCli == nil || !b.mqttCli.IsConnected() {
+		return fmt.Errorf("intercom MQTT not available")
+	}
+	tok := b.mqttCli.Subscribe(topic, qos, handler)
+	if !tok.WaitTimeout(3 * time.Second) {
+		return fmt.Errorf("mqtt subscribe timed out")
+	}
+	return tok.Error()
+}
+
 // Stop cleans up HTTP + MQTT. Safe to call when New errored (no-op).
 func (b *Bridge) Stop() {
 	if b.cancel != nil {
