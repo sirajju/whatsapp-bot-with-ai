@@ -477,22 +477,28 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set Seconds so WhatsApp's player has a duration to seek against —
+	// without it, the clip shows but won't start playback on some clients.
+	seconds := media.ProbeDurationSeconds(convCtx, ogg, ".ogg")
+
 	owner := types.JID{User: b.cfg.Owners[0], Server: types.DefaultUserServer}
 	mime := "audio/ogg; codecs=opus"
 	ptt := true
 	flen := uint64(len(ogg))
-	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{
-		AudioMessage: &waE2E.AudioMessage{
-			URL:           &up.URL,
-			FileEncSHA256: up.FileEncSHA256,
-			FileSHA256:    up.FileSHA256,
-			MediaKey:      up.MediaKey,
-			Mimetype:      &mime,
-			DirectPath:    &up.DirectPath,
-			FileLength:    &flen,
-			PTT:           &ptt,
-		},
-	})
+	audio := &waE2E.AudioMessage{
+		URL:           &up.URL,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		MediaKey:      up.MediaKey,
+		Mimetype:      &mime,
+		DirectPath:    &up.DirectPath,
+		FileLength:    &flen,
+		PTT:           &ptt,
+	}
+	if seconds > 0 {
+		audio.Seconds = &seconds
+	}
+	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{AudioMessage: audio})
 	if err != nil {
 		b.log.Error().Err(err).Msg("voice-from-home: send failed")
 		http.Error(w, "send failed", http.StatusInternalServerError)
