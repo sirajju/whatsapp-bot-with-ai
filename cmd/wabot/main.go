@@ -269,9 +269,28 @@ func main() {
 	// wifi-presence service to the first owner. No-op unless PRESENCE_ALERTS=on.
 	commands.StartPresenceAlerter(ctx, cli, cfg, log)
 	// Household Pinger — subscribes to HOUSEHOLD_PING_TOPIC and DMs the first
-	// owner on any message. "Someone at home is calling you."
+	// owner on any message. Wakes the camera in background, grabs a snapshot, and
+	// sends the photo with caption "Someone at home is calling you."
 	if cfg.HouseholdEnabled && intercomBr != nil {
-		if _, err := household.NewPinger(intercomBr, cfg.HouseholdPingTopic, cfg.HouseholdPingCooldown, notifyOwner, log); err != nil {
+		sendPingPhoto := func(caption string) bool {
+			if len(cfg.Owners) == 0 {
+				return false
+			}
+			owner := types.NewJID(cfg.Owners[0], types.DefaultUserServer)
+			snapCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			img, mime, err := commands.CaptureSnapshot(snapCtx, cfg, intercomBr)
+			if err != nil {
+				log.Warn().Err(err).Msg("household ping: capture snapshot failed")
+				return false
+			}
+			if err := commands.SendImageWithCaption(snapCtx, cli, owner, img, mime, caption); err != nil {
+				log.Warn().Err(err).Msg("household ping: send image failed")
+				return false
+			}
+			return true
+		}
+		if _, err := household.NewPinger(intercomBr, cfg.HouseholdPingTopic, cfg.HouseholdPingCooldown, notifyOwner, sendPingPhoto, log); err != nil {
 			log.Warn().Err(err).Msg("household ping not available")
 		}
 	}

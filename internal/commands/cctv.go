@@ -63,7 +63,57 @@ func CCTV(ic *intercom.Bridge) router.Handler {
 	}
 }
 
-// --- snapshot (unchanged behaviour, just factored out) ---------------------
+// --- snapshot -------------------------------------------------------------
+
+// CaptureSnapshot wakes the camera (if MQTT control is configured and live session
+// isn't active), polls the snapshot endpoint, fetches the JPEG bytes, and auto-stops
+// the camera. Shared by !cctv and household ping.
+func CaptureSnapshot(ctx context.Context, cfg *config.Config, ic *intercom.Bridge) ([]byte, string, error) {
+	url := strings.TrimSpace(cfg.CCTVURL)
+	if url == "" {
+		return nil, "", fmt.Errorf("cctv: CCTV_URL not set")
+	}
+	useControl := cfg.CCTVControlTopic != "" && ic != nil
+	if useControl && !liveSessionActive() {
+		if err := ic.Publish(cfg.CCTVControlTopic, []byte(`{"action":"start"}`)); err != nil {
+			// continue anyway
+		}
+		if err := waitForCamera(ctx, url, cfg); err != nil {
+			_ = publishStop(ic, cfg)
+			return nil, "", err
+		}
+	}
+	defer func() {
+		if useControl && cfg.CCTVAutoStop && !liveSessionActive() {
+			_ = publishStop(ic, cfg)
+		}
+	}()
+	return fetchSnap(ctx, url, cfg)
+}
+
+// SendImageWithCaption uploads an image to WhatsApp CDN and sends it to the chat.
+func SendImageWithCaption(ctx context.Context, cli *whatsmeow.Client, chat types.JID, img []byte, mime string, caption string) error {
+	up, err := cli.Upload(ctx, img, whatsmeow.MediaImage)
+	if err != nil {
+		return err
+	}
+	msg := &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			URL:           &up.URL,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			MediaKey:      up.MediaKey,
+			Mimetype:      proto.String(mime),
+			DirectPath:    &up.DirectPath,
+			FileLength:    proto.Uint64(uint64(len(img))),
+		},
+	}
+	if caption != "" {
+		msg.ImageMessage.Caption = proto.String(caption)
+	}
+	_, err = cli.SendMessage(ctx, chat, msg)
+	return err
+}
 
 func snapshotHandler(ctx context.Context, env *router.Env, ic *intercom.Bridge) error {
 	url := strings.TrimSpace(env.Cfg.CCTVURL)
@@ -75,31 +125,15 @@ func snapshotHandler(ctx context.Context, env *router.Env, ic *intercom.Bridge) 
 	useControl := env.Cfg.CCTVControlTopic != "" && ic != nil
 	if useControl && !liveSessionActive() {
 		_ = sendText(ctx, env.Cli, env.Chat, "📸 waking camera…")
-		if err := ic.Publish(env.Cfg.CCTVControlTopic, []byte(`{"action":"start"}`)); err != nil {
-			env.Log.Warn().Err(err).Msg("cctv: mqtt start publish failed, trying URL anyway")
-		}
-		if err := waitForCamera(ctx, url, env.Cfg); err != nil {
-			_ = publishStop(ic, env.Cfg)
-			return sendText(ctx, env.Cli, env.Chat, "cctv: "+err.Error())
-		}
 	} else {
 		_ = sendText(ctx, env.Cli, env.Chat, "📸 fetching…")
 	}
 
-	body, mime, err := fetchSnap(ctx, url, env.Cfg)
-
-	// If we started the camera ourselves and no live session is running,
-	// put it back to sleep.
-	if useControl && env.Cfg.CCTVAutoStop && !liveSessionActive() {
-		if stopErr := publishStop(ic, env.Cfg); stopErr != nil {
-			env.Log.Warn().Err(stopErr).Msg("cctv: mqtt stop publish failed")
-		}
-	}
-
+	body, mime, err := CaptureSnapshot(ctx, env.Cfg, ic)
 	if err != nil {
 		return sendText(ctx, env.Cli, env.Chat, "cctv: "+err.Error())
 	}
-	if err := uploadAndSendImage(ctx, env.Cli, env.Chat, body, mime); err != nil {
+	if err := SendImageWithCaption(ctx, env.Cli, env.Chat, body, mime, ""); err != nil {
 		return sendText(ctx, env.Cli, env.Chat, "cctv: upload failed — "+err.Error())
 	}
 	return nil

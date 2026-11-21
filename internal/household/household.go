@@ -31,10 +31,15 @@ type Subscriber interface {
 // owners are set or the WhatsApp send fails. Wired from main.go's notifyOwner.
 type NotifyFunc func(text string) bool
 
+// SendPhotoFunc is an optional helper to capture and DM a photo of whoever is at
+// the kiosk to the owner. Returns false if capture or upload failed.
+type SendPhotoFunc func(caption string) bool
+
 type Pinger struct {
-	log      zerolog.Logger
-	notify   NotifyFunc
-	cooldown time.Duration
+	log       zerolog.Logger
+	notify    NotifyFunc
+	sendPhoto SendPhotoFunc
+	cooldown  time.Duration
 
 	mu       sync.Mutex
 	lastPing time.Time
@@ -44,14 +49,15 @@ type Pinger struct {
 // handler fires for every message on the topic. Content of the payload is
 // ignored — the arrival IS the ping. Cooldown rejects follow-up messages
 // within that window to prevent dashboard double-taps from spamming you.
-func NewPinger(sub Subscriber, topic string, cooldown time.Duration, notify NotifyFunc, log zerolog.Logger) (*Pinger, error) {
+func NewPinger(sub Subscriber, topic string, cooldown time.Duration, notify NotifyFunc, sendPhoto SendPhotoFunc, log zerolog.Logger) (*Pinger, error) {
 	if cooldown == 0 {
 		cooldown = 10 * time.Second
 	}
 	p := &Pinger{
-		log:      log.With().Str("component", "household").Logger(),
-		notify:   notify,
-		cooldown: cooldown,
+		log:       log.With().Str("component", "household").Logger(),
+		notify:    notify,
+		sendPhoto: sendPhoto,
+		cooldown:  cooldown,
 	}
 	if err := sub.Subscribe(topic, 1, p.handle); err != nil {
 		return nil, fmt.Errorf("subscribe %s: %w", topic, err)
@@ -70,8 +76,26 @@ func (p *Pinger) handle(_ mqtt.Client, msg mqtt.Message) {
 	p.lastPing = time.Now()
 	p.mu.Unlock()
 
-	text := fmt.Sprintf("📞 *Someone at home is calling you* — %s", time.Now().Format("15:04 Mon"))
-	if ok := p.notify(text); !ok {
+	caption := fmt.Sprintf("📞 *Someone at home is calling you* — %s", time.Now().Format("15:04 Mon"))
+
+	if p.sendPhoto != nil {
+		go func() {
+			p.log.Info().Msg("household ping: taking camera snapshot in background...")
+			if ok := p.sendPhoto(caption); ok {
+				p.log.Info().Msg("household ping: delivered with photo")
+				return
+			}
+			p.log.Warn().Msg("household ping: camera capture failed, falling back to text notify")
+			if ok := p.notify(caption); !ok {
+				p.log.Warn().Msg("household ping: fallback notify failed")
+			} else {
+				p.log.Info().Msg("household ping delivered (text fallback)")
+			}
+		}()
+		return
+	}
+
+	if ok := p.notify(caption); !ok {
 		p.log.Warn().Msg("household ping: notify failed")
 	} else {
 		p.log.Info().Msg("household ping delivered")
