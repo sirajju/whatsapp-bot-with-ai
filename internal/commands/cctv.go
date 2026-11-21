@@ -208,19 +208,24 @@ func liveOff(ctx context.Context, env *router.Env, ic *intercom.Bridge) error {
 	return sendText(ctx, env.Cli, env.Chat, msg)
 }
 
-// buildLiveMessage composes the MJPEG URL reply with optional external URL.
+// buildLiveMessage composes the MJPEG URL reply. We send one URL per line
+// with blank lines around so WhatsApp auto-links them cleanly. Basic-auth is
+// NOT embedded in the URL — chat apps refuse to linkify userinfo URLs for
+// security, and Chrome strips them anyway. Credentials are listed below the
+// URL so the user enters them in the browser's auth prompt instead.
 func buildLiveMessage(cfg *config.Config, seconds int) string {
 	lan := resolveStreamURL(cfg.CCTVStreamURL, cfg.CCTVURL)
-	lan = embedBasicAuth(lan, cfg.CCTVUser, cfg.CCTVPassword)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "📸 *camera up for %d s*\n", seconds)
-	fmt.Fprintf(&b, "LAN: %s", lan)
+	fmt.Fprintf(&b, "📸 Camera up for %d seconds\n\n", seconds)
+	fmt.Fprintf(&b, "%s\n", lan)
 	if cfg.CCTVStreamURLExt != "" {
-		ext := embedBasicAuth(cfg.CCTVStreamURLExt, cfg.CCTVUser, cfg.CCTVPassword)
-		fmt.Fprintf(&b, "\nExternal: %s", ext)
+		fmt.Fprintf(&b, "\n%s\n", cfg.CCTVStreamURLExt)
 	}
-	fmt.Fprintf(&b, "\nSend `!cctv off` to stop early.")
+	if cfg.CCTVUser != "" {
+		fmt.Fprintf(&b, "\nUser: %s\nPassword: %s\n", cfg.CCTVUser, cfg.CCTVPassword)
+	}
+	fmt.Fprintf(&b, "\nSend !cctv off to stop early.")
 	return b.String()
 }
 
@@ -234,19 +239,6 @@ func resolveStreamURL(streamURL, fallbackShotURL string) string {
 		return strings.Replace(fallbackShotURL, "/shot.jpg", "/video", 1)
 	}
 	return fallbackShotURL
-}
-
-// embedBasicAuth injects user:pass@ into a URL so tapping it from WhatsApp
-// opens the browser pre-authed, no credential prompt. Noop when user is empty.
-func embedBasicAuth(url, user, pass string) string {
-	if user == "" {
-		return url
-	}
-	i := strings.Index(url, "://")
-	if i < 0 {
-		return url
-	}
-	return url[:i+3] + user + ":" + pass + "@" + url[i+3:]
 }
 
 // --- shared snapshot helpers ---------------------------------------------
