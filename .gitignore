@@ -16,3 +16,5 @@ tmp/
 *.out
 vendor/
 coverage.txt
+.claude/
+
