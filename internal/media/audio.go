@@ -30,6 +30,7 @@ func OggOpusFromAny(ctx context.Context, raw []byte, inExt string) ([]byte, erro
 		"-vn", // drop any video track (webm from MediaRecorder sometimes carries one)
 		"-c:a", "libopus",
 		"-b:a", "32k",
+		"-vbr", "on",
 		"-ar", "48000",
 		"-ac", "1",
 		"-af", "asetpts=PTS-STARTPTS", // Rebuild presentation timestamps from 0

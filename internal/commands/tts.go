@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -327,16 +328,30 @@ func sendVoiceNoteFromMP3(ctx context.Context, cli *whatsmeow.Client, chat types
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)
 	}
+	seconds := media.ProbeDurationSeconds(ctx, ogg, ".ogg")
+	if seconds == 0 {
+		seconds = 1
+	}
+	now := time.Now().Unix()
+	flen := up.FileLength
+	if flen == 0 {
+		flen = uint64(len(ogg))
+	}
+	ptt := true
+	mime := "audio/ogg; codecs=opus"
 	_, err = cli.SendMessage(ctx, chat, &waE2E.Message{
 		AudioMessage: &waE2E.AudioMessage{
-			URL:           &up.URL,
-			FileEncSHA256: up.FileEncSHA256,
-			FileSHA256:    up.FileSHA256,
-			MediaKey:      up.MediaKey,
-			Mimetype:      stringPtr("audio/ogg; codecs=opus"),
-			DirectPath:    &up.DirectPath,
-			FileLength:    uint64Ptr(uint64(len(ogg))),
-			PTT:           boolPtr(true),
+			URL:               &up.URL,
+			FileEncSHA256:     up.FileEncSHA256,
+			FileSHA256:        up.FileSHA256,
+			MediaKey:          up.MediaKey,
+			Mimetype:          &mime,
+			DirectPath:        &up.DirectPath,
+			FileLength:        &flen,
+			PTT:               &ptt,
+			Seconds:           &seconds,
+			StreamingSidecar:  up.StreamingSidecar,
+			MediaKeyTimestamp: &now,
 		},
 	})
 	return err

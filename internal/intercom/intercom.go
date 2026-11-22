@@ -487,18 +487,24 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 	owner := types.JID{User: b.cfg.Owners[0], Server: types.DefaultUserServer}
 	mime := "audio/ogg; codecs=opus"
 	ptt := true
-	flen := uint64(len(ogg))
+	flen := up.FileLength
+	if flen == 0 {
+		flen = uint64(len(ogg))
+	}
+	now := time.Now().Unix()
 	audio := &waE2E.AudioMessage{
-		URL:           &up.URL,
-		FileEncSHA256: up.FileEncSHA256,
-		FileSHA256:    up.FileSHA256,
-		MediaKey:      up.MediaKey,
-		Mimetype:      &mime,
-		DirectPath:    &up.DirectPath,
-		FileLength:    &flen,
-		PTT:           &ptt,
-		Seconds:       &seconds,
-		Waveform:      generateWaveform(ogg),
+		URL:               &up.URL,
+		FileEncSHA256:     up.FileEncSHA256,
+		FileSHA256:        up.FileSHA256,
+		MediaKey:          up.MediaKey,
+		Mimetype:          &mime,
+		DirectPath:        &up.DirectPath,
+		FileLength:        &flen,
+		PTT:               &ptt,
+		Seconds:           &seconds,
+		StreamingSidecar:  up.StreamingSidecar,
+		MediaKeyTimestamp: &now,
+		Waveform:          generateWaveform(ogg),
 	}
 	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{AudioMessage: audio})
 	if err != nil {
@@ -507,7 +513,13 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.log.Info().Str("to", b.cfg.Owners[0]).Int("in_bytes", len(raw)).Int("ogg_bytes", len(ogg)).Msg("voice-from-home: delivered")
+	b.log.Info().
+		Str("to", b.cfg.Owners[0]).
+		Int("in_bytes", len(raw)).
+		Int("ogg_bytes", len(ogg)).
+		Uint32("seconds", seconds).
+		Int("sidecar_bytes", len(up.StreamingSidecar)).
+		Msg("voice-from-home: delivered")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
@@ -590,6 +602,9 @@ func react(ctx context.Context, cli *whatsmeow.Client, evt *events.Message, emoj
 func generateWaveform(data []byte) []byte {
 	waveform := make([]byte, 64)
 	if len(data) == 0 {
+		for i := range waveform {
+			waveform[i] = 40
+		}
 		return waveform
 	}
 	step := len(data) / 64
@@ -601,7 +616,11 @@ func generateWaveform(data []byte) []byte {
 		if idx >= len(data) {
 			idx = len(data) - 1
 		}
-		waveform[i] = byte(15 + int(data[idx])%70)
+		val := int(data[idx]) % 75
+		if val < 10 {
+			val = 10
+		}
+		waveform[i] = byte(val)
 	}
 	return waveform
 }
