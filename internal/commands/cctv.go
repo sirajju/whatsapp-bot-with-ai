@@ -182,11 +182,18 @@ func liveOn(ctx context.Context, env *router.Env, ic *intercom.Bridge, seconds i
 	}
 	liveMu.Unlock()
 
+	checkURL := strings.TrimSpace(env.Cfg.CCTVStreamURL)
+	if checkURL == "" {
+		checkURL = "http://192.168.1.231:8080/shot.jpg"
+	} else if strings.Contains(checkURL, "/video") {
+		checkURL = strings.Replace(checkURL, "/video", "/shot.jpg", 1)
+	}
+
 	_ = sendText(ctx, env.Cli, env.Chat, fmt.Sprintf("📸 waking camera for %ds…", seconds))
-	if err := ic.Publish(env.Cfg.CCTVControlTopic, []byte(`{"action":"live"}`)); err != nil {
+	if err := ic.Publish(env.Cfg.CCTVControlTopic, []byte(`{"action":"start"}`)); err != nil {
 		return sendText(ctx, env.Cli, env.Chat, "cctv: mqtt start failed — "+err.Error())
 	}
-	if err := waitForCamera(ctx, url, env.Cfg); err != nil {
+	if err := waitForCamera(ctx, checkURL, env.Cfg); err != nil {
 		_ = publishStop(ic, env.Cfg)
 		return sendText(ctx, env.Cli, env.Chat, "cctv: "+err.Error())
 	}

@@ -32,7 +32,7 @@ func WallphoneAssistant(ic *intercom.Bridge) router.Handler {
 			payload = `{"action":"dismiss"}`
 			reply = "📱 Dismissed Gemini on wall phone (back to WallPanel)"
 		case "live":
-			payload = `{"action":"live"}`
+			payload = `{"action":"gemini_live"}`
 			reply = "🎙️ Started Gemini Live on wall phone"
 		case "app":
 			payload = `{"action":"gemini_app"}`
