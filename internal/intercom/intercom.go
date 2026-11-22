@@ -348,7 +348,7 @@ func (b *Bridge) forward(ctx context.Context, cli *whatsmeow.Client, evt *events
 	}
 
 	id := newID()
-	ext := ".opus"
+	ext := ".ogg"
 	if mt := strings.ToLower(a.GetMimetype()); strings.Contains(mt, "mp4") {
 		ext = ".m4a"
 	}
@@ -480,6 +480,9 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 	// Set Seconds so WhatsApp's player has a duration to seek against —
 	// without it, the clip shows but won't start playback on some clients.
 	seconds := media.ProbeDurationSeconds(convCtx, ogg, ".ogg")
+	if seconds == 0 {
+		seconds = 1
+	}
 
 	owner := types.JID{User: b.cfg.Owners[0], Server: types.DefaultUserServer}
 	mime := "audio/ogg; codecs=opus"
@@ -494,9 +497,8 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 		DirectPath:    &up.DirectPath,
 		FileLength:    &flen,
 		PTT:           &ptt,
-	}
-	if seconds > 0 {
-		audio.Seconds = &seconds
+		Seconds:       &seconds,
+		Waveform:      generateWaveform(ogg),
 	}
 	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{AudioMessage: audio})
 	if err != nil {
@@ -584,3 +586,23 @@ func react(ctx context.Context, cli *whatsmeow.Client, evt *events.Message, emoj
 	_, err := cli.SendMessage(rctx, evt.Info.Chat, cli.BuildReaction(evt.Info.Chat, evt.Info.Sender, evt.Info.ID, emoji))
 	return err
 }
+
+func generateWaveform(data []byte) []byte {
+	waveform := make([]byte, 64)
+	if len(data) == 0 {
+		return waveform
+	}
+	step := len(data) / 64
+	if step == 0 {
+		step = 1
+	}
+	for i := 0; i < 64; i++ {
+		idx := i * step
+		if idx >= len(data) {
+			idx = len(data) - 1
+		}
+		waveform[i] = byte(15 + int(data[idx])%70)
+	}
+	return waveform
+}
+

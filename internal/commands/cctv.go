@@ -73,9 +73,20 @@ func CaptureSnapshot(ctx context.Context, cfg *config.Config, ic *intercom.Bridg
 	if url == "" {
 		return nil, "", fmt.Errorf("cctv: CCTV_URL not set")
 	}
+
+	// Try fetching snapshot directly first (e.g. bgcam running silently in background).
+	// If it succeeds, no app needs to open or close on the screen!
+	quickCtx, quickCancel := context.WithTimeout(ctx, 4*time.Second)
+	snap, mime, err := fetchSnap(quickCtx, url, cfg)
+	quickCancel()
+	if err == nil && len(snap) > 0 {
+		return snap, mime, nil
+	}
+
+	// Fallback: wake IP Webcam via MQTT if silent endpoint wasn't reachable
 	useControl := cfg.CCTVControlTopic != "" && ic != nil
 	if useControl && !liveSessionActive() {
-		if err := ic.Publish(cfg.CCTVControlTopic, []byte(`{"action":"start"}`)); err != nil {
+		if err := ic.Publish(cfg.CCTVControlTopic, []byte(`{"action":"live"}`)); err != nil {
 			// continue anyway
 		}
 		if err := waitForCamera(ctx, url, cfg); err != nil {
@@ -172,7 +183,7 @@ func liveOn(ctx context.Context, env *router.Env, ic *intercom.Bridge, seconds i
 	liveMu.Unlock()
 
 	_ = sendText(ctx, env.Cli, env.Chat, fmt.Sprintf("📸 waking camera for %ds…", seconds))
-	if err := ic.Publish(env.Cfg.CCTVControlTopic, []byte(`{"action":"start"}`)); err != nil {
+	if err := ic.Publish(env.Cfg.CCTVControlTopic, []byte(`{"action":"live"}`)); err != nil {
 		return sendText(ctx, env.Cli, env.Chat, "cctv: mqtt start failed — "+err.Error())
 	}
 	if err := waitForCamera(ctx, url, env.Cfg); err != nil {

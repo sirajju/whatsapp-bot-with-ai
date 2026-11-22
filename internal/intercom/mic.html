@@ -225,6 +225,25 @@ let pointerId = null;
 
 const fmt = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 
+let isPointerDown = false;
+let isStarting = false;
+
+// Pre-warm audio hardware on page load
+window.addEventListener('load', () => {
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    }).then(s => {
+      mediaStream = s;
+    }).catch(() => {});
+  }
+});
+
 function pickMime() {
   const prefs = [
     'audio/webm;codecs=opus',
@@ -251,24 +270,34 @@ function clearErr() {
   errBox.style.display = 'none';
 }
 
-async function startRecording(e) {
-  if (isRecording || isSending) return;
+async function startRecording() {
+  if (isRecording || isSending || isStarting) return;
+  isStarting = true;
   clearErr();
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    isStarting = false;
     showErr('Microphone API not available in this browser.');
     return;
   }
 
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
+    if (!mediaStream || !mediaStream.active) {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    }
+
+    // Abort if finger was already lifted while acquiring mic
+    if (!isPointerDown) {
+      isStarting = false;
+      return;
+    }
 
     const mime = pickMime();
     rec = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : {});
@@ -279,19 +308,14 @@ async function startRecording(e) {
     };
 
     rec.onstop = () => {
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(t => t.stop());
-        mediaStream = null;
-      }
-
       if (isCancelled) {
         resetToIdle('Cancelled ✕', 'status-badge cancelling');
         return;
       }
 
       const duration = Date.now() - startTime;
-      if (duration < 600) {
-        resetToIdle('Hold button while speaking (too short)', 'status-badge');
+      if (duration < 400) {
+        resetToIdle('Hold button while speaking', 'status-badge');
         return;
       }
 
@@ -301,19 +325,26 @@ async function startRecording(e) {
       sendVoice(blob);
     };
 
-    rec.start();
+    rec.start(100);
     isRecording = true;
+    isStarting = false;
     isCancelled = false;
     startTime = Date.now();
+
+    // Check again if released during startup
+    if (!isPointerDown) {
+      stopRecording();
+      return;
+    }
 
     // Haptic feedback on start
     if (navigator.vibrate) navigator.vibrate(40);
 
     micBtn.classList.add('active');
     micBtn.classList.remove('cancelling', 'sent');
-    status.textContent = 'Recording… Release to send';
+    status.textContent = 'Listening… Release to send';
     status.className = 'status-badge recording';
-    hint.textContent = 'Drag finger away to cancel';
+    hint.textContent = 'Release to send • Drag finger away to cancel';
 
     timerInterval = setInterval(() => {
       const s = Math.floor((Date.now() - startTime) / 1000);
@@ -324,6 +355,7 @@ async function startRecording(e) {
     }, 200);
 
   } catch (err) {
+    isStarting = false;
     console.error('mic error:', err);
     showErr('Mic permission denied or unavailable: ' + (err.message || err.name));
     resetToIdle();
@@ -331,6 +363,10 @@ async function startRecording(e) {
 }
 
 function stopRecording() {
+  if (isStarting) {
+    // startRecording will see !isPointerDown and abort cleanly
+    return;
+  }
   if (!isRecording) return;
   isRecording = false;
 
@@ -341,7 +377,7 @@ function stopRecording() {
 
   micBtn.classList.remove('active', 'cancelling');
 
-  if (rec && rec.state === 'recording') {
+  if (rec && rec.state !== 'inactive') {
     rec.stop();
   }
 }
@@ -423,11 +459,12 @@ function resetToIdle(customMsg, customClass) {
 micBtn.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (isSending) return;
+  isPointerDown = true;
   pointerId = e.pointerId;
   startX = e.clientX;
   startY = e.clientY;
   try { micBtn.setPointerCapture(pointerId); } catch (_) {}
-  startRecording(e);
+  startRecording();
 });
 
 micBtn.addEventListener('pointermove', e => {
@@ -455,6 +492,7 @@ micBtn.addEventListener('pointermove', e => {
 
 micBtn.addEventListener('pointerup', e => {
   e.preventDefault();
+  isPointerDown = false;
   if (pointerId !== null) {
     try { micBtn.releasePointerCapture(pointerId); } catch (_) {}
     pointerId = null;
@@ -464,6 +502,7 @@ micBtn.addEventListener('pointerup', e => {
 
 micBtn.addEventListener('pointercancel', e => {
   e.preventDefault();
+  isPointerDown = false;
   if (pointerId !== null) {
     try { micBtn.releasePointerCapture(pointerId); } catch (_) {}
     pointerId = null;

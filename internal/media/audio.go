@@ -32,6 +32,7 @@ func OggOpusFromAny(ctx context.Context, raw []byte, inExt string) ([]byte, erro
 		"-b:a", "32k",
 		"-ar", "48000",
 		"-ac", "1",
+		"-af", "asetpts=PTS-STARTPTS", // Rebuild presentation timestamps from 0
 		"-application", "voip",
 	)
 }
