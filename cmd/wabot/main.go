@@ -210,6 +210,8 @@ func main() {
 	r.Register("cctv", "owner: snapshot from the wall-phone camera", commands.CCTV(intercomBr), "cam", "snap")
 	// Speedtest — measure latency, download, upload speeds via Cloudflare edge.
 	r.Register("speedtest", "owner: test network download/upload speed", commands.Speedtest(), "speed")
+	// Intruder — instant security audit (presence check + live room snapshot).
+	r.Register("intruder", "owner: security audit (presence + camera snapshot)", commands.Intruder(intercomBr), "check", "security")
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 
