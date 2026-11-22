@@ -14,27 +14,27 @@ import (
 // renders the result as a voice note.
 func OggOpusFromMP3(ctx context.Context, mp3 []byte) ([]byte, error) {
 	return ffmpegTranscode(ctx, mp3, ".mp3", ".ogg",
-		"-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-ac", "1")
+		"-vn",
+		"-c:a", "libopus",
+		"-b:a", "32k",
+		"-ar", "48000",
+		"-ac", "1",
+		"-avoid_negative_ts", "make_zero",
+		"-f", "opus",
+	)
 }
 
 // OggOpusFromAny converts arbitrary audio bytes (webm/ogg/wav/m4a) to an
 // Opus-in-Ogg container WhatsApp renders and plays as a voice note.
-//
-// Browser-recorded webm/opus arrives without a proper Ogg index — a
-// straight stream-copy or minimal re-encode leaves WhatsApp able to
-// display the clip but not play it. Forcing a re-encode at 48 kHz mono
-// with -application voip (the Opus mode WA's own clients use) and
-// -write_xing ensures every produced file has a usable duration page.
 func OggOpusFromAny(ctx context.Context, raw []byte, inExt string) ([]byte, error) {
 	return ffmpegTranscode(ctx, raw, inExt, ".ogg",
-		"-vn", // drop any video track (webm from MediaRecorder sometimes carries one)
+		"-vn",
 		"-c:a", "libopus",
 		"-b:a", "32k",
-		"-vbr", "on",
 		"-ar", "48000",
 		"-ac", "1",
-		"-af", "asetpts=PTS-STARTPTS", // Rebuild presentation timestamps from 0
-		"-application", "voip",
+		"-avoid_negative_ts", "make_zero",
+		"-f", "opus",
 	)
 }
 

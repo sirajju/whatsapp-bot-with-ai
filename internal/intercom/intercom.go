@@ -491,20 +491,16 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 	if flen == 0 {
 		flen = uint64(len(ogg))
 	}
-	now := time.Now().Unix()
 	audio := &waE2E.AudioMessage{
-		URL:               &up.URL,
-		FileEncSHA256:     up.FileEncSHA256,
-		FileSHA256:        up.FileSHA256,
-		MediaKey:          up.MediaKey,
-		Mimetype:          &mime,
-		DirectPath:        &up.DirectPath,
-		FileLength:        &flen,
-		PTT:               &ptt,
-		Seconds:           &seconds,
-		StreamingSidecar:  up.StreamingSidecar,
-		MediaKeyTimestamp: &now,
-		Waveform:          generateWaveform(ogg),
+		URL:           &up.URL,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		MediaKey:      up.MediaKey,
+		Mimetype:      &mime,
+		DirectPath:    &up.DirectPath,
+		FileLength:    &flen,
+		PTT:           &ptt,
+		Seconds:       &seconds,
 	}
 	_, err = cli.SendMessage(convCtx, owner, &waE2E.Message{AudioMessage: audio})
 	if err != nil {
@@ -518,7 +514,6 @@ func (b *Bridge) voiceFromHome(w http.ResponseWriter, r *http.Request) {
 		Int("in_bytes", len(raw)).
 		Int("ogg_bytes", len(ogg)).
 		Uint32("seconds", seconds).
-		Int("sidecar_bytes", len(up.StreamingSidecar)).
 		Msg("voice-from-home: delivered")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
