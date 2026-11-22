@@ -65,41 +65,19 @@ func CCTV(ic *intercom.Bridge) router.Handler {
 
 // --- snapshot -------------------------------------------------------------
 
-// CaptureSnapshot wakes the camera (if MQTT control is configured and live session
-// isn't active), polls the snapshot endpoint, fetches the JPEG bytes, and auto-stops
-// the camera. Shared by !cctv and household ping.
+// CaptureSnapshot fetches a JPEG snapshot from the background camera endpoint.
+// Shared by !cctv and household ping. Runs 100% silently in background.
 func CaptureSnapshot(ctx context.Context, cfg *config.Config, ic *intercom.Bridge) ([]byte, string, error) {
 	url := strings.TrimSpace(cfg.CCTVURL)
 	if url == "" {
 		return nil, "", fmt.Errorf("cctv: CCTV_URL not set")
 	}
 
-	// Try fetching snapshot directly first (e.g. bgcam running silently in background).
-	// If it succeeds, no app needs to open or close on the screen!
-	quickCtx, quickCancel := context.WithTimeout(ctx, 4*time.Second)
-	snap, mime, err := fetchSnap(quickCtx, url, cfg)
-	quickCancel()
-	if err == nil && len(snap) > 0 {
-		return snap, mime, nil
-	}
-
-	// Fallback: wake IP Webcam via MQTT if silent endpoint wasn't reachable
-	useControl := cfg.CCTVControlTopic != "" && ic != nil
-	if useControl && !liveSessionActive() {
-		if err := ic.Publish(cfg.CCTVControlTopic, []byte(`{"action":"live"}`)); err != nil {
-			// continue anyway
-		}
-		if err := waitForCamera(ctx, url, cfg); err != nil {
-			_ = publishStop(ic, cfg)
-			return nil, "", err
-		}
-	}
-	defer func() {
-		if useControl && cfg.CCTVAutoStop && !liveSessionActive() {
-			_ = publishStop(ic, cfg)
-		}
-	}()
-	return fetchSnap(ctx, url, cfg)
+	// Fetch snapshot directly from silent background endpoint (bgcam :8088).
+	// termux-camera-photo takes ~3-4s, so allow up to 10s without disturbing the screen.
+	snapCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return fetchSnap(snapCtx, url, cfg)
 }
 
 // SendImageWithCaption uploads an image to WhatsApp CDN and sends it to the chat.
@@ -133,12 +111,7 @@ func snapshotHandler(ctx context.Context, env *router.Env, ic *intercom.Bridge) 
 			"cctv: CCTV_URL not set in .env (e.g. http://192.168.1.231:8080/shot.jpg)")
 	}
 
-	useControl := env.Cfg.CCTVControlTopic != "" && ic != nil
-	if useControl && !liveSessionActive() {
-		_ = sendText(ctx, env.Cli, env.Chat, "📸 waking camera…")
-	} else {
-		_ = sendText(ctx, env.Cli, env.Chat, "📸 fetching…")
-	}
+	_ = sendText(ctx, env.Cli, env.Chat, "📸 fetching…")
 
 	body, mime, err := CaptureSnapshot(ctx, env.Cfg, ic)
 	if err != nil {
