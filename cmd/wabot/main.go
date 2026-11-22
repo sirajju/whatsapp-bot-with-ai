@@ -212,6 +212,8 @@ func main() {
 	r.Register("speedtest", "owner: test network download/upload speed", commands.Speedtest(), "speed")
 	// Intruder — instant security audit (presence check + live room snapshot).
 	r.Register("intruder", "owner: security audit (presence + camera snapshot)", commands.Intruder(intercomBr), "check", "security")
+	// Gemini — trigger the official Gemini voice assistant/app on the wall phone.
+	r.Register("gemini", "owner: trigger Gemini on wall phone (!gemini [live|app|off])", commands.WallphoneAssistant(intercomBr), "assistant")
 	// Menu last so it sees everything else.
 	r.Register("menu", "show this list", commands.Menu(r.Help()), "help")
 

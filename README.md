@@ -96,6 +96,7 @@ sudo loginctl enable-linger $USER   # keep running after logout
 | `!cctv on [seconds]`        |            | Owner      | Starts live MJPEG camera stream with auto-off timer (max 10m)    |
 | `!cctv off`                 |            | Owner      | Shuts off the live camera stream immediately                    |
 | `!speedtest`                | `!speed`   | Owner      | Network latency, download & upload speed test via Cloudflare CDN|
+| `!gemini [live/app/off]`    | `!assistant` | Owner    | Trigger official Gemini Voice Assistant / Live on the wall phone |
 
 ### LAN Presence Tracking
 
